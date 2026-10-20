@@ -2,6 +2,7 @@ import os
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+import requests
 from google import genai
 from google.genai import types
 
@@ -11,12 +12,41 @@ EMAIL_USER = os.environ.get("EMAIL_USER")
 EMAIL_APP_PASSWORD = os.environ.get("EMAIL_APP_PASSWORD")
 EMAIL_TO = os.environ.get("EMAIL_TO")
 
+def fetch_latest_football_news():
+    """Puxa notícias e dados recentes de futebol para evitar a cota de busca nativa da API."""
+    queries = [
+        "futebol brasileiro resultados brasileirao copa do brasil",
+        "futebol internacional champions league laliga premier league brasileiros",
+        "estatísticas futebol xG raio-x opta"
+    ]
+    raw_data = []
+    
+    for query in queries:
+        try:
+            url = f"https://news.google.com/rss/search?q={query}&hl=pt-BR&gl=BR&ceid=BR:pt-415"
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                raw_data.append(response.text[:3000])
+        except Exception as e:
+            print(f"Aviso ao coletar notícias para '{query}': {e}")
+            
+    combined_content = "\n\n".join(raw_data)
+    return combined_content if combined_content else "Sem dados externos coletados hoje. Focar apenas em notícias verificadas."
+
 def generate_newsletter():
     client = genai.Client(api_key=GEMINI_API_KEY)
     
-    prompt = """
+    print("A coletar notícias e estatísticas reais das últimas 24 horas...")
+    live_news = fetch_latest_football_news()
+    
+    prompt = f"""
     És um jornalista desportivo especialista em futebol e analista de dados de desempenho (estilo Opta Analyst).
-    Cria uma newsletter diária completa, elegante e altamente relevante com base estritamente nas notícias e dados reais das últimas 24 horas encontrados via pesquisa na web.
+    Cria uma newsletter diária completa, elegante e altamente relevante com base estritamente nas notícias e dados reais das últimas 24 horas fornecidos abaixo.
+
+    DADOS E NOTÍCIAS RECENTES DAS ÚLTIMAS 24 HORAS:
+    ---
+    {live_news}
+    ---
 
     Regra de Ouro: Sê rigoroso. Se não houver informações ou estatísticas relevantes e verificáveis sobre um determinado tópico ou secção para o dia de hoje, OMITE essa secção por completo. Nunca inventes dados, números ou estatísticas.
 
@@ -31,15 +61,21 @@ def generate_newsletter():
     """
 
     response = client.models.generate_content(
-        model='gemini-3.8-flash',  # <--- Corrigido para o modelo ativo exigido pela API
+        model='gemini-2.5-flash',
         contents=prompt,
         config=types.GenerateContentConfig(
-            tools=[{"google_search": {}}],  # Ativa a pesquisa em tempo real
-            temperature=0.2,                # Garante foco total nos factos reais
+            temperature=0.2,  # Garante foco total nos factos reais fornecidos
         ),
     )
     
-    return response.text
+    # Remove blocos markdown caso o modelo eventualmente retorne
+    content = response.text
+    if content.startswith("```html"):
+        content = content.replace("```html", "", 1)
+    if content.endswith("```"):
+        content = content[:-3]
+        
+    return content.strip()
 
 def send_email(html_content):
     msg = MIMEMultipart('alternative')
