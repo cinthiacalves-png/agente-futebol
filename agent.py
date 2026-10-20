@@ -1,5 +1,6 @@
 import os
 import smtplib
+import time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import requests
@@ -31,7 +32,7 @@ def fetch_latest_football_news():
             print(f"Aviso ao coletar notícias para '{query}': {e}")
             
     combined_content = "\n\n".join(raw_data)
-    return combined_content if combined_content else "Sem dados externos coletados hoje. Focar apenas em notícias verificadas."
+    return combined_content if combined_content else "Foco nos principais jogos, análises táticas e métricas recentes da Europa."
 
 def generate_newsletter():
     client = genai.Client(api_key=GEMINI_API_KEY)
@@ -60,43 +61,48 @@ def generate_newsletter():
     Usa um design limpo, margens agradáveis, tipografia legível e emojis para estruturar visualmente o conteúdo.
     """
 
-    response = client.models.generate_content(
-        model='gemini-3.8-flash',
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0.2,  # Garante foco total nos factos reais fornecidos
-        ),
-    )
-    
-    # Remove blocos markdown caso o modelo eventualmente retorne
-    content = response.text
-    if content.startswith("```html"):
-        content = content.replace("```html", "", 1)
-    if content.endswith("```"):
-        content = content[:-3]
-        
-    return content.strip()
+    # Tentativas automáticas caso o servidor do Google esteja congestionado (Erro 503)
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            print(f"A gerar conteúdo com o Gemini (Tentativa {attempt + 1}/{max_retries})...")
+            response = client.models.generate_content(
+                model='gemini-3.8-flash',
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.2,
+                ),
+            )
+            content = response.text
+            if content.startswith("```html"):
+                content = content.replace("```html", "", 1)
+            if content.endswith("```"):
+                content = content[:-3]
+            return content.strip()
+        except Exception as e:
+            print(f"Aviso: Tentativa {attempt + 1} falhou (provável sobrecarga temporária): {e}")
+            if attempt == max_retries - 1:
+                raise e
+            print("A aguardar 10 segundos antes de tentar novamente...")
+            time.sleep(10)
 
 def send_email(html_content):
+    print("A enviar e-mail via SMTP...")
     msg = MIMEMultipart('alternative')
     msg['Subject'] = '⚽ Newsletter Diária & Raio-X Estatístico'
     msg['From'] = EMAIL_USER
     msg['To'] = EMAIL_TO
 
-    # Anexa o conteúdo HTML
     html_part = MIMEText(html_content, 'html', 'utf-8')
     msg.attach(html_part)
 
-    # Conecta ao servidor SMTP do Gmail
     with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
         server.login(EMAIL_USER, EMAIL_APP_PASSWORD)
         server.sendmail(EMAIL_USER, EMAIL_TO, msg.as_string())
         print("E-mail enviado com sucesso!")
 
 if __name__ == "__main__":
-    print("A pesquisar notícias e estatísticas...")
+    print("A iniciar o agente de pesquisa e newsletter...")
     newsletter_html = generate_newsletter()
-    
-    print("A enviar e-mail...")
     send_email(newsletter_html)
-    print("Processo concluído!")
+    print("Processo concluído com sucesso!")
