@@ -31,11 +31,11 @@ def generate_newsletter():
     """
 
     response = client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-3.8-flash',  # <--- Corrigido para o modelo ativo exigido pela API
         contents=prompt,
         config=types.GenerateContentConfig(
             tools=[{"google_search": {}}],  # Ativa a pesquisa em tempo real
-            temperature=0.2,                # Mantém a resposta bem fática e sem invenções
+            temperature=0.2,                # Garante foco total nos factos reais
         ),
     )
     
