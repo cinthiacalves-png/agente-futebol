@@ -16,11 +16,11 @@ EMAIL_TO = os.environ.get("EMAIL_TO")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 def fetch_latest_football_news():
-    """Puxa notícias e dados recentes de futebol para evitar a cota de busca nativa da API."""
+    """Puxa notícias e dados recentes de futebol de forma leve via RSS para evitar bloqueios de cota."""
     queries = [
-        "futebol brasileiro resultados brasileirao copa do brasil",
-        "futebol internacional champions league laliga premier league resultados",
-        "estatisticas futebol xG opta resultados jogos ontem hoje"
+        "futebol brasileiro resultados placar brasileirao copa do brasil",
+        "futebol internacional champions league laliga premier league resultados placar",
+        "estatisticas futebol xG opta placar jogos ontem hoje"
     ]
     raw_data = []
     
@@ -39,7 +39,8 @@ def fetch_latest_football_news():
 def curate_and_verify_facts(raw_news):
     """
     AGENTE 1 (Curador / Fact-Checker):
-    Saneia os dados brutos, remove ruídos de divisões de base e garante precisão nos placares/vencedores.
+    Saneia os dados brutos, exige a presença do placar numérico para ancorar o resultado real 
+    e descarta artigos de opinião imprecisos ou ligas de base/juvenis.
     """
     curation_prompt = f"""
     És um curador rigoroso de dados desportivos e checador de factos de futebol.
@@ -49,11 +50,12 @@ def curate_and_verify_facts(raw_news):
     ---
 
     A tua missão é extrair um relatório factual limpo e 100% verídico, seguindo estas regras estritas:
-    1. **Precisão nos Resultados**: Identifica claramente quem venceu, quem perdeu ou se houve empate. NUNCA inverte o vencedor de um jogo.
-    2. **Separação Categoria de Base vs. Profissional**: Descarta ou separa claramente torneios juvenis/sub-19 (ex: UEFA Youth League) da Liga dos Campeões / torneios profissionais principais. Não mistures desempenhos da base como se fossem da equipa principal.
-    3. **Apenas Factos Reais**: Retém resultados, golos marcados, jogadores em destaque, métricas (xG, chutes, posse) e notícias confirmadas do futebol brasileiro e europeu.
+    1. **Ancoragem por Placar Numérico**: Para incluir qualquer jogo ou resultado na curadoria, deves identificar o placar numérico exato no texto (ex: 'Barcelona 1 x 2 PSG'). Se o texto for apenas uma crônica de opinião, especulação ou não contiver o placar numérico claro, DESCARTA O JOGO por completo.
+    2. **Zero Inversão de Vencedores**: Com base no placar numérico verificado, declara com clareza absoluta quem venceu, quem perdeu ou se houve empate. NUNCA inverte o vencedor nem confunda merecimento com o resultado real.
+    3. **Separação Categoria de Base vs. Profissional**: Descarta ou separa claramente torneios juvenis/sub-19 (ex: UEFA Youth League) da Liga dos Campeões / torneios profissionais principais.
+    4. **Métricas Fatuais**: Mantém apenas dados e estatísticas reais confirmadas (gols marcados, destaques, xG, posse de bola, cartões, etc.).
 
-    Retorna apenas um resumo analítico e estruturado com os factos limpos e validados.
+    Retorna apenas um resumo factual com os jogos validados e os seus respetivos placares numéricos e fatos confirmados.
     """
 
     for attempt in range(3):
@@ -70,25 +72,25 @@ def curate_and_verify_facts(raw_news):
             print(f"Aviso no Agente Curador (tentativa {attempt + 1}): {e}")
             time.sleep(5)
     
-    return raw_news  # Fallback para dados brutos se a curadoria falhar
+    return raw_news  # Fallback caso a tentativa falhe
 
 def generate_newsletter():
     """
     AGENTE 2 (Redator / Opta Analyst):
-    Escreve a newsletter com base EXCLUSIVAMENTE nos factos limpos pelo Agente 1.
+    Transforma os fatos numéricos e checados do Agente 1 em uma narrativa elegante e analítica estilo Opta.
     """
-    print("A coletar notícias brancas das últimas 24 horas...")
+    print("A coletar notícias brutas das últimas 24 horas...")
     raw_news = fetch_latest_football_news()
 
-    print("Agente 1 (Curador): A filtrar ruído, validar vencedores e checar factos...")
+    print("Agente 1 (Curador): A ancorar placares numéricos, filtrar ruído e validar vencedores...")
     clean_facts = curate_and_verify_facts(raw_news)
 
     print("Agente 2 (Opta Analyst): A redigir a newsletter tática...")
     writer_prompt = f"""
     És um jornalista desportivo especialista em futebol e analista de dados de desempenho (estilo Opta Analyst).
-    Cria uma newsletter diária completa, elegante e altamente relevante com base estritamente nos FACTOS VALIDADOS abaixo:
+    Cria uma newsletter diária completa, elegante e altamente relevante com base estritamente nos FACTOS E PLACARES VALIDADOS abaixo:
 
-    FACTOS E DADOS CHECADOS (ÚLTIMAS 24 HORAS):
+    FACTOS E PLACARES CHECADOS (ÚLTIMAS 24 HORAS):
     ---
     {clean_facts}
     ---
