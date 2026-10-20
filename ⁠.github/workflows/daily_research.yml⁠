@@ -22,8 +22,8 @@ jobs:
 
       - name: Run script
         env:
-          GEMINI_API_KEY: ${{ secrets.AQ.Ab8RN6IxHW_DsTePUt1E9ts7QvxkR1vzSwGk45eIvtJPxVrC4g }}
-          EMAIL_USER: ${{ secrets.cinthia.c.alves@gmail.com }}
-          EMAIL_APP_PASSWORD: ${{ secrets.Kitinho210281! }}
-          EMAIL_TO: ${{ secrets.rod_eug@hotmail.com }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
         run: python agent.py
