@@ -18,9 +18,9 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 def fetch_latest_football_news():
     """Puxa notícias e dados recentes de futebol de forma leve via RSS para evitar bloqueios de cota."""
     queries = [
-        "futebol brasileiro resultados placar brasileirao copa do brasil",
-        "futebol internacional champions league laliga premier league resultados placar",
-        "estatisticas futebol xG opta placar jogos ontem hoje"
+        "futebol brasileiro resultados brasileirao copa do brasil",
+        "futebol internacional champions league laliga premier league resultados",
+        "estatisticas futebol xG opta resultados jogos ontem hoje"
     ]
     raw_data = []
     
@@ -39,8 +39,8 @@ def fetch_latest_football_news():
 def curate_and_verify_facts(raw_news):
     """
     AGENTE 1 (Curador / Fact-Checker):
-    Saneia os dados brutos, exige a presença do placar numérico para ancorar o resultado real 
-    e descarta artigos de opinião imprecisos ou ligas de base/juvenis.
+    Saneia os dados brutos, extrai os resultados e placares mencionados nas notícias,
+    garantindo que não haja inversão de vencedores ou confusão com times de base.
     """
     curation_prompt = f"""
     És um curador rigoroso de dados desportivos e checador de factos de futebol.
@@ -49,13 +49,14 @@ def curate_and_verify_facts(raw_news):
     {raw_news}
     ---
 
-    A tua missão é extrair um relatório factual limpo e 100% verídico, seguindo estas regras estritas:
-    1. **Ancoragem por Placar Numérico**: Para incluir qualquer jogo ou resultado na curadoria, deves identificar o placar numérico exato no texto (ex: 'Barcelona 1 x 2 PSG'). Se o texto for apenas uma crônica de opinião, especulação ou não contiver o placar numérico claro, DESCARTA O JOGO por completo.
-    2. **Zero Inversão de Vencedores**: Com base no placar numérico verificado, declara com clareza absoluta quem venceu, quem perdeu ou se houve empate. NUNCA inverte o vencedor nem confunda merecimento com o resultado real.
-    3. **Separação Categoria de Base vs. Profissional**: Descarta ou separa claramente torneios juvenis/sub-19 (ex: UEFA Youth League) da Liga dos Campeões / torneios profissionais principais.
-    4. **Métricas Fatuais**: Mantém apenas dados e estatísticas reais confirmadas (gols marcados, destaques, xG, posse de bola, cartões, etc.).
+    A tua missão é extrair um resumo factual limpo dos jogos recentes (futebol brasileiro e europeu), seguindo estas regras:
+    1. **Extração de Resultados e Placares**: Identifica os jogos, equipas envolvidas e os placares ou vencedores mencionados nas notícias.
+    2. **Zero Inversão de Vencedores**: Confirma claramente quem venceu com base no texto. Se houver contradição ou dúvida sobre o resultado de um jogo, descarta-o.
+    3. **Sem Alucinações**: Lista apenas o que está explicitamente informado no texto bruto. Não inventes placares ou resultados que não constem na fonte.
+    4. **Separação Categoria de Base vs. Profissional**: Ignora torneios juvenis/sub-19 (ex: UEFA Youth League), focando exclusivamente no futebol profissional principal.
+    5. **Métricas e Destaques**: Mantém dados reais citados (gols, destaques, xG, posse de bola, cartões, etc.).
 
-    Retorna apenas um resumo factual com os jogos validados e os seus respetivos placares numéricos e fatos confirmados.
+    Retorna um resumo estruturado com os fatos e placares validados para serem usados na redação da newsletter.
     """
 
     for attempt in range(3):
@@ -72,17 +73,17 @@ def curate_and_verify_facts(raw_news):
             print(f"Aviso no Agente Curador (tentativa {attempt + 1}): {e}")
             time.sleep(5)
     
-    return raw_news  # Fallback caso a tentativa falhe
+    return raw_news  # Fallback para dados brutos em caso de falha
 
 def generate_newsletter():
     """
     AGENTE 2 (Redator / Opta Analyst):
-    Transforma os fatos numéricos e checados do Agente 1 em uma narrativa elegante e analítica estilo Opta.
+    Transforma os fatos e resultados validados pelo Agente 1 em uma narrativa elegante e analítica estilo Opta.
     """
     print("A coletar notícias brutas das últimas 24 horas...")
     raw_news = fetch_latest_football_news()
 
-    print("Agente 1 (Curador): A ancorar placares numéricos, filtrar ruído e validar vencedores...")
+    print("Agente 1 (Curador): A filtrar ruído, validar vencedores e checar factos...")
     clean_facts = curate_and_verify_facts(raw_news)
 
     print("Agente 2 (Opta Analyst): A redigir a newsletter tática...")
