@@ -35,6 +35,7 @@ def generate_newsletter():
         contents=prompt,
         config=types.GenerateContentConfig(
             tools=[{"google_search": {}}],  # Ativa a pesquisa em tempo real
+            temperature=0.2,                # Mantém a resposta bem fática e sem invenções
         ),
     )
     
