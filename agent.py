@@ -1,7 +1,7 @@
 import os
 import smtplib
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import requests
@@ -19,71 +19,59 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 
 def fetch_official_matches():
     """
-    Busca com garantia de retorno os últimos jogos terminados das principais ligas.
-    Lida com transições de temporada (2026/2025) automaticamente.
+    Busca partidas finalizadas de forma direta e sem estourar o limite da API.
+    Procura nos últimos dias até encontrar jogos reais registados.
     """
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {
         "x-apisports-key": FOOTBALL_API_KEY
     }
     
-    # IDs das ligas:
-    # 71: Brasileirão | 140: LaLiga | 39: Premier League | 2: Champions League
-    # 307: Saudi Pro League (CR7) | 253: MLS (Messi)
-    leagues = [
-        {"id": 71, "name": "Brasileirão"},
-        {"id": 140, "name": "LaLiga"},
-        {"id": 39, "name": "Premier League"},
-        {"id": 2, "name": "Champions League"},
-        {"id": 307, "name": "Saudi Pro League"},
-        {"id": 253, "name": "MLS"}
-    ]
-    
-    current_year = datetime.now().year
     match_list = []
     
-    for league in leagues:
-        league_id = league["id"]
-        found = False
+    # Procura retroativamente até 5 dias atrás para capturar partidas reais (Brasil, Europa, MLS, Arábia)
+    for i in range(1, 6):
+        target_date = (datetime.utcnow() - timedelta(hours=3) - timedelta(days=i)).strftime('%Y-%m-%d')
+        params = {
+            "date": target_date,
+            "status": "FT"
+        }
         
-        # Tenta a temporada atual e a anterior para garantir que encontra jogos mesmo em transição de ano
-        for season in [current_year, current_year - 1]:
-            params = {
-                "league": league_id,
-                "season": season,
-                "status": "FT",  # Jogos concluídos
-                "last": 3        # Últimos 3 confrontos
-            }
-            try:
-                print(f"A consultar {league['name']} (ID {league_id}) para a temporada {season}...")
-                response = requests.get(url, headers=headers, params=params, timeout=15)
-                if response.status_code == 200:
-                    data = response.json()
-                    fixtures = data.get("response", [])
-                    
-                    if fixtures:
-                        for fix in fixtures:
-                            l_name = fix.get("league", {}).get("name", league["name"])
-                            country = fix.get("league", {}).get("country", "")
-                            home = fix.get("teams", {}).get("home", {}).get("name", "Casa")
-                            away = fix.get("teams", {}).get("away", {}).get("name", "Fora")
-                            
-                            goals = fix.get("goals", {})
-                            g_home = goals.get("home", 0)
-                            g_away = goals.get("away", 0)
-                            
-                            f_date = fix.get("fixture", {}).get("date", "")[:10]
-                            
-                            match_list.append(f"• [{country} - {l_name} ({f_date})] {home} {g_home} x {g_away} {away}")
-                        found = True
-                        break # Se encontrou jogos nesta temporada, passa à próxima liga
-            except Exception as e:
-                print(f"Erro ao consultar a liga {league_id} na temporada {season}: {e}")
+        try:
+            print(f"A consultar API-Football para a data: {target_date}...")
+            response = requests.get(url, headers=headers, params=params, timeout=15)
+            
+            if response.status_code == 200:
+                data = response.json()
+                fixtures = data.get("response", [])
                 
+                if fixtures:
+                    for fix in fixtures:
+                        league_info = fix.get("league", {})
+                        l_name = league_info.get("name", "")
+                        country = league_info.get("country", "")
+                        
+                        home = fix.get("teams", {}).get("home", {}).get("name", "")
+                        away = fix.get("teams", {}).get("away", {}).get("name", "")
+                        
+                        goals = fix.get("goals", {})
+                        g_home = goals.get("home", 0)
+                        g_away = goals.get("away", 0)
+                        
+                        # Concatena a partida formatada
+                        match_list.append(f"• [{country} - {l_name}] {home} {g_home} x {g_away} {away} ({target_date})")
+                    
+                    if len(match_list) >= 5:
+                        print(f"Sucesso: {len(match_list)} partidas encontradas para {target_date}.")
+                        break
+        except Exception as e:
+            print(f"Erro ao consultar a data {target_date}: {e}")
+            
     if match_list:
-        return "RESULTADOS REAIS E RECENTES DAS PRINCIPAIS COMPETIÇÕES:\n" + "\n".join(match_list)
+        # Retorna até 35 partidas para alimentar o Gemini com dados fartos
+        return "\n".join(match_list[:35])
         
-    return "Nenhum resultado recente encontrado."
+    return "Nenhum resultado recente retornado pela API."
 
 def generate_newsletter():
     official_results = fetch_official_matches()
@@ -91,25 +79,24 @@ def generate_newsletter():
     print("A estruturar a newsletter com o Gemini...")
     prompt = f"""
     És um analista de dados desportivos de elite (estilo Opta Analyst).
-    Cria uma newsletter diária elegante focada ESTRITAMENTE nos resultados oficiais fornecidos abaixo:
+    Cria uma newsletter diária elegante focada nos resultados reais fornecidos abaixo:
 
     DADOS OFICIAIS DA API DE FUTEBOL:
     ---
     {official_results}
     ---
 
-    Regras Absolutas:
-    1. Usa estritamente os placares e dados acima. NUNCA dizes que não há jogos se a lista contiver partidas.
-    2. Dá destaque especial aos jogos de equipas brasileiras, principais ligas europeias e ao desempenho de estrelas globais (como Lionel Messi e Cristiano Ronaldo) com base nos jogos listados.
-    3. Analisa os confrontos detalhadamente com foco tático e métrico.
+    Instruções Principais:
+    1. Se a lista acima contiver jogos, analisa os placares e destaques com rigor estatístico e tático.
+    2. Dá destaque às equipas brasileiras, aos grandes clubes europeus e a estrelas como Lionel Messi ou Cristiano Ronaldo caso os seus clubes/ligas apareçam na lista.
+    3. Se por algum motivo a lista indicar ausência de jogos, elabora uma breve síntese sobre o momento das competições mundiais.
 
     A newsletter deve conter as seguintes secções formatadas em HTML limpo:
-    1. ⚽ **Destaques da Jornada**: Análise detalhada dos jogos mais recentes fornecidos na lista.
-    2. 🌍 **Panorama Global (Brasil, Europa, MLS e Arábia Saudita)**: Contextualização dos resultados nas respetivas competições.
-    3. 📊 **Leitura Tática**: Perspetiva analítica do desempenho das equipas e jogadores.
+    1. ⚽ **Destaques da Jornada**: Análise dos principais confrontos disponíveis.
+    2. 🌍 **Panorama Global (Brasil, Europa, MLS e Arábia Saudita)**: Contextualização dos resultados e momento dos clubes.
+    3. 📊 **Leitura Tática**: Análise de desempenho das equipas.
 
-    Formata EXCLUSIVAMENTE em código HTML limpo (sem blocos ```html), pronto para e-mail.
-    Usa um design moderno, legível e responsivo.
+    Formata EXCLUSIVAMENTE em código HTML limpo (sem blocos de código ```html), pronto para e-mail.
     """
 
     for attempt in range(3):
