@@ -18,47 +18,57 @@ EMAIL_TO = os.environ.get("EMAIL_TO")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 def fetch_official_matches():
-    """Puxa os resultados reais e terminados do dia anterior diretamente da API oficial."""
-    yesterday = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')
+    """
+    Varre os últimos dias de forma inteligente até encontrar 
+    a jornada mais recente com resultados oficiais terminados.
+    """
     url = "https://v3.football.api-sports.io/fixtures"
-    
     headers = {
         "x-apisports-key": FOOTBALL_API_KEY
     }
-    params = {
-        "date": yesterday,
-        "status": "FT"  # Apenas jogos terminados (Full Time) para garantir resultados reais
-    }
     
-    try:
-        response = requests.get(url, headers=headers, params=params, timeout=15)
-        if response.status_code == 200:
-            data = response.json()
-            fixtures = data.get("response", [])
-            
-            match_list = []
-            for fix in fixtures:
-                league = fix.get("league", {}).get("name", "")
-                home = fix.get("teams", {}).get("home", {}).get("name", "")
-                away = fix.get("teams", {}).get("away", {}).get("name", "")
-                goals_home = fix.get("goals", {}).get("home", 0)
-                goals_away = fix.get("goals", {}).get("away", 0)
-                
-                match_list.append(f"• [{league}] {home} {goals_home} x {goals_away} {away}")
-                
-            if match_list:
-                return "\n".join(match_list)
-    except Exception as e:
-        print(f"Aviso ao consultar a API de futebol: {e}")
+    match_list = []
+    # Procura retroativamente nos últimos 4 dias para apanhar sempre o fim de semana ou jornadas recentes
+    for i in range(1, 5):
+        target_date = (datetime.utcnow() - timedelta(days=i)).strftime('%Y-%m-%d')
+        params = {
+            "date": target_date,
+            "status": "FT"  # Jogos terminados (Full Time)
+        }
         
-    return "Nenhum resultado registado para ontem."
+        try:
+            print(f"A verificar resultados oficiais para a data: {target_date}...")
+            response = requests.get(url, headers=headers, params=params, timeout=15)
+            if response.status_code == 200:
+                data = response.json()
+                fixtures = data.get("response", [])
+                
+                if fixtures:
+                    for fix in fixtures:
+                        league = fix.get("league", {}).get("name", "")
+                        home = fix.get("teams", {}).get("home", {}).get("name", "")
+                        away = fix.get("teams", {}).get("away", {}).get("name", "")
+                        goals_home = fix.get("goals", {}).get("home", 0)
+                        goals_away = fix.get("goals", {}).get("away", 0)
+                        
+                        match_list.append(f"• [{league}] {home} {goals_home} x {goals_away} {away}")
+                    
+                    if match_list:
+                        print(f"Encontrados {len(fixtures)} jogos oficiais referentes a {target_date}.")
+                        break
+        except Exception as e:
+            print(f"Aviso ao consultar a API de futebol para {target_date}: {e}")
+            
+    if match_list:
+        return "\n".join(match_list)
+        
+    return "Nenhum resultado competitivo recente registado nas últimas jornadas."
 
 def generate_newsletter():
     """
-    Usa os resultados matemáticos e oficiais da API para alimentar o Agente Redator (Opta Analyst),
-    garantindo zero alucinações de placares ou vencedores invertidos.
+    Usa os resultados oficiais da API para alimentar o Agente Redator (Opta Analyst),
+    garantindo zero alucinações de placares.
     """
-    print("A consultar resultados oficiais na API-Football...")
     official_results = fetch_official_matches()
 
     print("Agente Redator (Opta Analyst): A estruturar a análise tática...")
@@ -66,17 +76,17 @@ def generate_newsletter():
     És um jornalista desportivo especialista em futebol e analista de dados de desempenho (estilo Opta Analyst).
     Cria uma newsletter diária elegante e altamente relevante com base ESTRITAMENTE nos resultados oficiais abaixo:
 
-    RESULTADOS OFICIAIS E PLACARES INQUESTIONÁVEIS (JOGOS DE ONTEM):
+    RESULTADOS OFICIAIS E PLACARES INQUESTIONÁVEIS:
     ---
     {official_results}
     ---
 
-    Regra de Ouro Absoluta: Os placares e vencedores listados acima são a verdade matemática imutável. Nunca invertas quem ganhou ou perdeu. Se o Barcelona perdeu, o texto tem de refletir que ele perdeu. Nunca inventes placares ou dados que não constem na lista.
+    Regra de Ouro Absoluta: Os placares e vencedores listados acima são a verdade matemática imutável. Nunca invertas quem ganhou ou perdeu. Nunca inventes placares ou dados que não constem na lista.
 
     A newsletter deve conter as seguintes secções formatadas em HTML limpo:
-    1. ⚽ **Destaques do Dia**: Análise dos principais confrontos com base estritamente nos resultados oficiais fornecidos.
-    2. 🌍 **Panorama Internacional e Europeu**: Contextualização dos resultados na tabela ou competição.
-    3. 📊 **Leitura Tática**: Uma reflexão profunda sobre o momento das equipas em destaque.
+    1. ⚽ **Destaques da Jornada**: Análise dos principais confrontos com base estritamente nos resultados oficiais fornecidos.
+    2. 🌍 **Panorama Internacional e Europeu**: Contextualização dos resultados nas respetivas competições.
+    3. 📊 **Leitura Tática**: Uma reflexão profunda sobre o desempenho das equipas em destaque.
 
     A resposta deve ser formatada EXCLUSIVAMENTE em código HTML limpo (sem blocos de código markdown como ```html), pronto para ser inserido diretamente no corpo de um e-mail.
     Usa um design limpo, margens agradáveis, tipografia legível e emojis para estruturar visualmente o conteúdo.
