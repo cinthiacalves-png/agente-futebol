@@ -184,12 +184,12 @@ def extrair_fontes(resp):
     return unicas[:8]
 
 
-def chamar_gemini(client, prompt, com_busca: bool):
+def chamar_gemini(client, prompt, com_busca: bool, modelo: str):
     config = types.GenerateContentConfig(
         temperature=0.4,
         tools=[types.Tool(google_search=types.GoogleSearch())] if com_busca else None,
     )
-    resp = client.models.generate_content(model=MODEL, contents=prompt, config=config)
+    resp = client.models.generate_content(model=modelo, contents=prompt, config=config)
     texto = (resp.text or "").strip()  # resp.text pode vir None (bloqueio/filtro)
     texto = re.sub(r"^```(?:html)?\s*|\s*```$", "", texto).strip()
     return texto, resp
@@ -209,11 +209,18 @@ def gerar_newsletter(noticias, memes):
     prompt = montar_prompt(noticias, memes)
     ultimo_erro = None
 
-    # 2 tentativas com busca; última sem busca (caso a ferramenta falhe)
-    for tentativa, com_busca in enumerate([True, True, False], start=1):
+    fallback = os.environ.get("MODEL_FALLBACK", "gemini-2.5-flash")
+    sem_busca = ("\n\nATENÇÃO: hoje a busca na web está indisponível. Use APENAS o material "
+                 "coletado acima. Em 'Dados' e 'Memes', use só o que está no material; se não "
+                 "houver, faça comentários seus, deixando claro que são comentários seus.")
+    # 1ª com busca; se der 429/503, as demais vão sem busca (a busca tem cota própria)
+    # e a última tenta outro modelo.
+    plano = [(MODEL, True), (MODEL, False), (MODEL, False), (fallback, False)]
+    for tentativa, (modelo, com_busca) in enumerate(plano, start=1):
         try:
-            print(f"Gemini: tentativa {tentativa} ({'com' if com_busca else 'sem'} busca)...")
-            texto, resp = chamar_gemini(client, prompt, com_busca)
+            print(f"Gemini: tentativa {tentativa} ({modelo}, {'com' if com_busca else 'sem'} busca)...")
+            texto, resp = chamar_gemini(client, prompt if com_busca else prompt + sem_busca,
+                                        com_busca, modelo)
             validar(texto)
             fontes = extrair_fontes(resp)
             if fontes:
@@ -223,7 +230,8 @@ def gerar_newsletter(noticias, memes):
         except Exception as e:
             ultimo_erro = e
             print(f"  falhou: {e}", file=sys.stderr)
-            time.sleep(8 * tentativa)
+            if tentativa < len(plano):
+                time.sleep(30 * tentativa)
     raise RuntimeError(f"Gemini não gerou conteúdo válido: {ultimo_erro}")
 
 
