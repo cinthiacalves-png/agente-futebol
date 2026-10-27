@@ -1,5 +1,6 @@
 import html as htmllib
 import os
+import random
 import re
 import smtplib
 import sys
@@ -22,6 +23,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 EMAIL_USER = os.environ.get("EMAIL_USER")
 EMAIL_APP_PASSWORD = os.environ.get("EMAIL_APP_PASSWORD")
 EMAIL_TO = os.environ.get("EMAIL_TO")
+GIPHY_API_KEY = os.environ.get("GIPHY_API_KEY")  # opcional: sem ela, vai sem GIF
 
 # Mantive o modelo que você já usava; se der erro de "model not found",
 # troque aqui ou defina a variável MODEL no workflow.
@@ -153,17 +155,30 @@ ESTRUTURA OBRIGATÓRIA (HTML limpo, só o conteúdo do <body>, sem ```):
   rola hoje.
 <h2>📊 Dados pro papo de bar</h2>
   3 a 5 estatísticas curiosas e VERIFICÁVEIS ligadas aos fatos recentes (artilharia,
-  sequências, recordes, desempenho). Diga de onde veio cada número.
+  sequências, recordes, desempenho). Diga de onde veio cada número. Não repita os mesmos
+  fatos da seção de acontecimentos: traga números e ângulos diferentes.
 <h2>😂 Memes e resenha do dia</h2>
   3 a 5 itens: descreva a piada/meme em 1-2 frases e cite onde bombou (perfil, comunidade).
-  Não incorpore imagens. Se não achar memes reais recentes, faça 2-3 comentários
+  Não incorpore imagens. Notícia comum NÃO é meme: só vale piada, zoeira ou post de humor.
+  Se não achar memes reais recentes, faça 2-3 comentários
   engraçados seus sobre os fatos do dia e deixe claro que são comentários seus.
 <h2>📅 Agenda de hoje</h2>
   Principais jogos do dia, horário de Brasília e onde passa (se confirmar).
 
 REGRAS: não invente placar, número, jogador ou link. Só use <a href> com links que aparecem
 no material coletado acima. Se não confirmar algo, deixe de fora. Nada de introdução ou
-despedida fora da estrutura."""
+despedida fora da estrutura.
+FORMATO: responda SOMENTE em HTML (<h2>, <ul><li>, <b>, <a href>). NÃO use Markdown
+(nada de **, #, * no início de linha ou [texto](url)).
+ÚLTIMAS 5 LINHAS da resposta, depois do HTML: uma busca de GIF por linha, com 2 a 4 palavras
+em inglês, exatamente nesta ordem:
+GIF1: clima geral do dia (topo da newsletter)
+GIF2: clima da notícia principal da seção de acontecimentos
+GIF3: tema da seção de dados (números, análise)
+GIF4: clima da seção de memes (risada, zoeira)
+GIF5: clima da agenda (bola rolando, expectativa)
+Exemplos de termos: coach fired shock / last minute goal celebration / nerd calculating /
+laughing crying / ready to play football."""
 
 
 def extrair_fontes(resp):
@@ -204,6 +219,42 @@ def validar(conteudo: str):
             raise ValueError(f"seção ausente: {secao}")
 
 
+def md_para_html(t: str) -> str:
+    """Rede de segurança: se o modelo devolver Markdown, converte para HTML."""
+
+    def inline(s):
+        s = htmllib.escape(s, quote=False)
+        s = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", s)
+        s = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r'<a href="\2">\1</a>', s)
+        return s
+
+    saida, em_lista = [], False
+    for linha in t.splitlines():
+        l = linha.strip()
+        m_item = re.match(r"^[\*\-•]\s+(.*)", l)
+        if m_item:
+            if not em_lista:
+                saida.append("<ul>")
+                em_lista = True
+            saida.append(f"<li>{inline(m_item.group(1))}</li>")
+            continue
+        if em_lista:
+            saida.append("</ul>")
+            em_lista = False
+        if not l:
+            continue
+        m_tit = re.match(r"^#{1,6}\s*(.*)", l)
+        if m_tit:
+            saida.append(f"<h2>{inline(m_tit.group(1))}</h2>")
+        elif re.match(r"^(\*\*)?[⚽📊😂📅]", l):  # título com emoji, sem '#'
+            saida.append(f"<h2>{inline(l)}</h2>")
+        else:
+            saida.append(f"<p>{inline(l)}</p>")
+    if em_lista:
+        saida.append("</ul>")
+    return "\n".join(saida)
+
+
 def gerar_newsletter(noticias, memes):
     client = genai.Client(api_key=GEMINI_API_KEY)
     prompt = montar_prompt(noticias, memes)
@@ -221,12 +272,15 @@ def gerar_newsletter(noticias, memes):
             print(f"Gemini: tentativa {tentativa} ({modelo}, {'com' if com_busca else 'sem'} busca)...")
             texto, resp = chamar_gemini(client, prompt if com_busca else prompt + sem_busca,
                                         com_busca, modelo)
+            texto, termos_gif = extrair_gifs(texto)
+            if "<h2" not in texto.lower():  # modelo devolveu Markdown: converte
+                texto = md_para_html(texto)
             validar(texto)
             fontes = extrair_fontes(resp)
             if fontes:
                 lis = "".join(f'<li><a href="{u}">{htmllib.escape(t)}</a></li>' for t, u in fontes)
                 texto += f'<h3 style="color:#777;">🔎 Fontes consultadas na busca</h3><ul>{lis}</ul>'
-            return texto
+            return texto, termos_gif
         except Exception as e:
             ultimo_erro = e
             print(f"  falhou: {e}", file=sys.stderr)
@@ -236,17 +290,171 @@ def gerar_newsletter(noticias, memes):
 
 
 # ---------------------------------------------------------------------------
-# E-mail
+# GIFs do dia (Giphy): 1 no topo + 1 em cada seção
 # ---------------------------------------------------------------------------
-def montar_email(conteudo: str) -> str:
-    return f"""<!DOCTYPE html><html><body style="margin:0;background:#f4f4f4;">
-<div style="max-width:640px;margin:0 auto;background:#fff;padding:24px;
-font-family:Arial,Helvetica,sans-serif;color:#222;line-height:1.5;">
-<h1 style="margin:0;">⚽ Bola do Dia</h1>
-<p style="margin:0 0 20px;color:#777;">{DATA}</p>
-{conteudo}
-<hr style="border:none;border-top:1px solid #eee;margin:24px 0;">
-<p style="color:#999;font-size:12px;">Gerado automaticamente por IA. Confira as fontes antes de bater o martelo no bar.</p>
+N_GIFS = 5
+# Termos de reserva por posição (topo, acontecimentos, dados, memes, agenda),
+# usados se o modelo não mandar o termo ou se a busca não achar nada.
+GIF_RESERVA = [
+    "football celebration",
+    "soccer goal",
+    "nerd calculating",
+    "laughing soccer fans",
+    "ready to play football",
+]
+
+
+def extrair_gifs(texto: str):
+    """Tira do texto as linhas 'GIF1: termo' ... 'GIF5: termo' pedidas ao modelo."""
+    termos = [None] * N_GIFS
+    padrao = re.compile(r"^[ \t]*\**GIF[ \t]*([1-5])?[ \t]*:\**[ \t]*(.+?)[ \t]*$",
+                        re.MULTILINE | re.IGNORECASE)
+
+    def coleta(m):
+        pos = int(m.group(1)) - 1 if m.group(1) else 0
+        termo = re.sub(r"[^\w\s'-]", "", m.group(2)).strip()[:60]
+        if termo and termos[pos] is None:
+            termos[pos] = termo
+        return ""
+
+    return padrao.sub(coleta, texto).strip(), termos
+
+
+def buscar_gif(termo, usados: set):
+    """Busca no Giphy e devolve a URL de um GIF ainda não usado. Nunca levanta erro."""
+    if not termo:
+        return None
+    try:
+        r = requests.get(
+            "https://api.giphy.com/v1/gifs/search",
+            timeout=15,
+            params={"api_key": GIPHY_API_KEY, "q": termo, "limit": 15,
+                    "rating": "pg", "lang": "en"},
+        )
+        r.raise_for_status()
+        dados = r.json().get("data", [])
+    except Exception as e:
+        print(f"Aviso: Giphy falhou para '{termo}' ({e}).", file=sys.stderr)
+        return None
+    random.shuffle(dados)
+    for g in dados:
+        imgs = g.get("images", {})
+        for tam in ("downsized", "downsized_medium", "fixed_height", "original"):
+            url = (imgs.get(tam) or {}).get("url")
+            if url and url not in usados:
+                return url
+    return None
+
+
+def buscar_gifs(termos):
+    """Devolve N_GIFS URLs (None onde não deu para achar). Nunca derruba o envio."""
+    if not GIPHY_API_KEY:
+        print("GIPHY_API_KEY ausente: seguindo sem GIFs.")
+        return [None] * N_GIFS
+    usados, urls = set(), []
+    for i in range(N_GIFS):
+        termo = termos[i] if i < len(termos) else None
+        url = buscar_gif(termo, usados) or buscar_gif(GIF_RESERVA[i], usados)
+        if url:
+            usados.add(url)
+        print(f"GIF {i + 1} (busca '{termo}'): {url}")
+        urls.append(url)
+        time.sleep(0.5)
+    return urls
+
+
+# ---------------------------------------------------------------------------
+# Visual do e-mail: estilo arcade anos 90, cores atuais (estilos inline p/ Gmail)
+# ---------------------------------------------------------------------------
+DIAS = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
+        "sexta-feira", "sábado", "domingo"]
+MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho",
+         "agosto", "setembro", "outubro", "novembro", "dezembro"]
+CORES = ["#a3ff12", "#22d3ee", "#ff2e93", "#fde047"]  # lima, ciano, rosa, amarelo
+ROTULOS = ["FASE 1", "FASE 2", "BÔNUS", "PRÓXIMA FASE"]
+MONO = "'Courier New',Courier,monospace"
+
+
+def estilizar(html: str, cor_link: str = "#22d3ee") -> str:
+    html = re.sub(r"<ul(?:\s[^>]*)?>",
+                  '<ul style="margin:12px 0 0 0;padding-left:22px;list-style-type:square;">', html)
+    html = re.sub(r"<li(?:\s[^>]*)?>", '<li style="margin:0 0 12px 0;">', html)
+    html = re.sub(
+        r"<a\s+",
+        f'<a style="color:{cor_link};font-weight:700;text-decoration:none;'
+        f'border-bottom:2px solid {cor_link};" ',
+        html,
+    )
+    return html
+
+
+def montar_email(conteudo: str, gifs=None) -> str:
+    gifs = list(gifs or []) + [None] * N_GIFS  # posição 0 = topo; 1..4 = seções
+    corpo, sep, fontes = conteudo.partition("<h3")
+    fontes = ((sep + fontes) if sep else "").replace("color:#777;", "color:#a78bfa;")
+    partes = re.split(r"(?i)(<h2[^>]*>.*?</h2>)", corpo, flags=re.DOTALL)
+
+    def img(url, cor, largura):
+        if not url:
+            return ""
+        return (f'<img src="{url}" alt="GIF" style="display:block;width:100%;'
+                f'max-width:{largura}px;height:auto;margin:14px auto 6px auto;'
+                f'border:3px solid {cor};">')
+
+    def caixa(cor):  # moldura com "sombra dura" feita com bordas (funciona em qualquer cliente)
+        return (f"background:#160b3a;color:#f5f3ff;border:3px solid #f5f3ff;"
+                f"border-right:8px solid {cor};border-bottom:8px solid {cor};"
+                f"padding:18px 20px;margin:0 0 22px 0;")
+
+    cards = []
+    for i in range(1, len(partes) - 1, 2):
+        n = i // 2
+        titulo = re.sub(r"(?i)</?h2[^>]*>", "", partes[i]).strip()
+        texto = estilizar(partes[i + 1].strip(), CORES[1])
+        cor = CORES[n % len(CORES)]
+        rotulo = ROTULOS[n % len(ROTULOS)]
+        gif = gifs[n + 1]
+        etiqueta = (f'<span style="display:inline-block;background:{cor};color:#0b0620;'
+                    f"font-family:{MONO};font-weight:700;font-size:12px;letter-spacing:2px;"
+                    f'padding:3px 10px;margin:0 0 8px 0;">{rotulo}</span>')
+        h2 = (f'<h2 style="margin:0;font-family:{MONO};font-size:20px;line-height:1.3;'
+              f'color:#ffffff;text-transform:uppercase;letter-spacing:1px;">{titulo}</h2>')
+        if gif:  # GIF pequeno à esquerda do título
+            cabecalho = (
+                '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+                'border="0"><tr>'
+                '<td width="110" valign="middle" style="padding:0 14px 0 0;">'
+                f'<img src="{gif}" alt="GIF" width="96" style="display:block;width:96px;'
+                f'height:auto;border:3px solid {cor};"></td>'
+                f'<td valign="middle">{etiqueta}{h2}</td></tr></table>'
+            )
+        else:
+            cabecalho = etiqueta + h2
+        cards.append(f'<div style="{caixa(cor)}">{cabecalho}{texto}</div>')
+    if not cards:  # rede de segurança: sem <h2>, vira um cartão só
+        cards.append(f'<div style="{caixa(CORES[0])}">{estilizar(corpo, CORES[1])}</div>')
+
+    data_ext = (f"{DIAS[AGORA.weekday()]}, {AGORA.day} de "
+                f"{MESES[AGORA.month - 1]} de {AGORA.year}")
+    bloco_fontes = (f'<div style="font-size:12px;color:#a78bfa;margin:0 0 22px 0;">'
+                    f"{estilizar(fontes, '#a78bfa')}</div>") if fontes else ""
+    credito = "<br>GIFs via GIPHY" if any(gifs[:N_GIFS]) else ""
+
+    return f"""<!DOCTYPE html><html><body style="margin:0;padding:0;background:#0b0620;">
+<div style="max-width:640px;margin:0 auto;padding:16px;font-family:Arial,Helvetica,sans-serif;
+font-size:15px;line-height:1.55;color:#f5f3ff;">
+<div style="{caixa(CORES[0])}text-align:center;">
+<div style="font-family:{MONO};font-size:12px;letter-spacing:3px;color:#fde047;font-weight:700;">1UP ● PLAYER 1 ● PRESS START</div>
+<h1 style="margin:10px 0 4px 0;font-family:{MONO};font-size:38px;line-height:1.05;letter-spacing:3px;color:#a3ff12;text-transform:uppercase;text-shadow:3px 3px 0 #ff2e93;">⚽ Bola do Dia</h1>
+<div style="font-family:{MONO};font-size:13px;letter-spacing:1px;color:#cbd5e1;text-transform:uppercase;">{data_ext}</div>
+{img(gifs[0], CORES[1], 300)}
+</div>
+{''.join(cards)}
+{bloco_fontes}
+<div style="text-align:center;font-family:{MONO};color:#a78bfa;font-size:12px;letter-spacing:1px;padding:4px 12px 20px 12px;">
+<div style="color:#fde047;font-weight:700;font-size:14px;margin:0 0 8px 0;">GAME OVER? NUNCA. TEM EDIÇÃO NOVA AMANHÃ ⚽</div>
+Gerado automaticamente por IA. Confira as fontes antes de bater o martelo no bar.{credito}
+</div>
 </div></body></html>"""
 
 
@@ -278,9 +486,11 @@ if __name__ == "__main__":
         print("Aviso: poucas notícias nos feeds; a busca do Gemini vai compensar.", file=sys.stderr)
 
     try:
-        conteudo = gerar_newsletter(noticias, memes)
+        conteudo, termos_gif = gerar_newsletter(noticias, memes)
     except Exception as e:
         print(f"Erro fatal: {e}", file=sys.stderr)
         sys.exit(1)  # workflow fica vermelho em vez de mandar e-mail vazio
 
-    send_email(montar_email(conteudo))
+    print(f"Termos de GIF: {termos_gif}")
+    gifs = buscar_gifs(termos_gif)
+    send_email(montar_email(conteudo, gifs))
