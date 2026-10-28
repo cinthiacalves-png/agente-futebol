@@ -32,7 +32,7 @@ DATA = AGORA.strftime("%d/%m/%Y")
 JANELA = timedelta(hours=36)  # notícias das últimas 36h
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# Todos os feeds originais mantidos!
+# Todos os seus feeds originais mantidos
 FEEDS = [
     ("Google Notícias · Futebol",
      "https://news.google.com/rss/search?q=futebol+when:1d&hl=pt-BR&gl=BR&ceid=BR:pt-419", "noticias"),
@@ -50,7 +50,7 @@ FEEDS = [
 
 
 # ---------------------------------------------------------------------------
-# Coleta de feeds (RSS e Atom) com espaçamento anti-bloqueio
+# Coleta de feeds com isolamento total de falhas (Resiliente)
 # ---------------------------------------------------------------------------
 def limpar(texto: str, limite: int = 220) -> str:
     texto = htmllib.unescape(texto or "")
@@ -75,11 +75,16 @@ def parse_data(texto):
 
 
 def ler_feed(nome: str, url: str, max_itens: int = 12):
-    r = requests.get(url, timeout=15, headers={"User-Agent": UA})
-    r.raise_for_status()
-    root = ET.fromstring(r.content)
-    itens = []
+    try:
+        r = requests.get(url, timeout=15, headers={"User-Agent": UA})
+        r.raise_for_status()
+        root = ET.fromstring(r.content)
+    except Exception as e:
+        # Se um feed falhar (ex: XML corrompido ou 429), avisa mas retorna vazio para não quebrar os outros
+        print(f"[aviso] Feed '{nome}' indisponível neste ciclo: {e}", file=sys.stderr)
+        return []
 
+    itens = []
     # RSS 2.0
     for it in root.findall(".//item"):
         itens.append({
@@ -108,16 +113,14 @@ def ler_feed(nome: str, url: str, max_itens: int = 12):
 def coletar():
     noticias, memes, vistos = [], [], set()
     for nome, url, categoria in FEEDS:
-        try:
-            itens = ler_feed(nome, url)
+        itens = ler_feed(nome, url)
+        if itens:
             print(f"[ok]   {nome}: {len(itens)} itens")
-        except Exception as e:
-            print(f"[erro] {nome}: {e}", file=sys.stderr)
-            # Continua o fluxo mesmo se um feed específico falhar temporariamente
-            itens = []
-        
-        # Pausa de 2 segundos entre cada feed para evitar rate limit (429) no Reddit/ESPN
-        time.sleep(2.0)
+        else:
+            print(f"[ignorado] {nome}: 0 itens recolhidos")
+
+        # Pausa segura de 2.5 segundos entre cada feed para respeitar rate limits de terceiros
+        time.sleep(2.5)
         
         for i in itens:
             chave = re.sub(r"\W+", "", i["titulo"].lower())[:60]
@@ -134,7 +137,7 @@ def coletar():
 
 
 # ---------------------------------------------------------------------------
-# Geração com Gemini
+# Geração com Gemini e Recuperação Progressiva de Erros (Backoff)
 # ---------------------------------------------------------------------------
 def montar_prompt(noticias, memes):
     bloco_noticias = "\n".join(noticias[:45]) or "(nenhum item coletado dos feeds)"
@@ -260,24 +263,26 @@ def gerar_newsletter(noticias, memes):
     sem_busca = ("\n\nATENÇÃO: hoje a busca na web está indisponível. Use APENAS o material coletado acima.")
     
     for tentativa, (modelo, com_busca) in enumerate(plano, start=1):
-        try:
-            print(f"Gemini: tentativa {tentativa} ({modelo}, {'com' if com_busca else 'sem'} busca)...")
-            texto, resp = chamar_gemini(client, prompt if com_busca else prompt + sem_busca,
-                                        com_busca, modelo)
-            texto, termos_gif = extrair_gifs(texto)
-            if "<h2" not in texto.lower():
-                texto = md_para_html(texto)
-            validar(texto)
-            fontes = extrair_fontes(resp)
-            if fontes:
-                lis = "".join(f'<li><a href="{u}">{htmllib.escape(t)}</a></li>' for t, u in fontes)
-                texto += f'<h3 style="color:#777;">🔎 Fontes consultadas na busca</h3><ul>{lis}</ul>'
-            return texto, termos_gif
-        except Exception as e:
-            ultimo_erro = e
-            print(f"  falhou: {e}", file=sys.stderr)
-            if tentativa < len(plano):
-                time.sleep(45)
+        for sub_tentativa in range(2): # Tenta até 2 vezes por camada em caso de 429/503
+            try:
+                print(f"Gemini: tentativa {tentativa}.{sub_tentativa+1} ({modelo}, {'com' if com_busca else 'sem'} busca)...")
+                texto, resp = chamar_gemini(client, prompt if com_busca else prompt + sem_busca,
+                                            com_busca, modelo)
+                texto, termos_gif = extrair_gifs(texto)
+                if "<h2" not in texto.lower():
+                    texto = md_para_html(texto)
+                validar(texto)
+                fontes = extrair_fontes(resp)
+                if fontes:
+                    lis = "".join(f'<li><a href="{u}">{htmllib.escape(t)}</a></li>' for t, u in fontes)
+                    texto += f'<h3 style="color:#777;">🔎 Fontes consultadas na busca</h3><ul>{lis}</ul>'
+                return texto, termos_gif
+            except Exception as e:
+                ultimo_erro = e
+                print(f"  falhou: {e}", file=sys.stderr)
+                # Pausa progressiva para limpar o limite de taxa (Rate Limit) antes de retestar
+                time.sleep(25 * (sub_tentativa + 1))
+                
     raise RuntimeError(f"Gemini não gerou conteúdo válido: {ultimo_erro}")
 
 
@@ -403,102 +408,4 @@ def montar_email(conteudo: str, gifs=None) -> str:
         gif = gifs[n + 1]
         etiqueta = (f'<span style="display:inline-block;background:{cor};color:#0b0620;'
                     f"font-family:{MONO};font-weight:700;font-size:12px;letter-spacing:2px;"
-                    f'padding:3px 10px;margin:0 0 8px 0;">{rotulo}</span>')
-        h2 = (f'<h2 style="margin:0;font-family:{MONO};font-size:20px;line-height:1.3;'
-              f'color:#ffffff;text-transform:uppercase;letter-spacing:1px;">{titulo}</h2>')
-        if gif:
-            cabecalho = (
-                '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
-                'border="0"><tr>'
-                '<td width="110" valign="middle" style="padding:0 14px 0 0;">'
-                f'<img src="{gif}" alt="GIF" width="96" style="display:block;width:96px;'
-                f'height:auto;border:3px solid {cor};"></td>'
-                f'<td valign="middle">{etiqueta}{h2}</td></tr></table>'
-            )
-        else:
-            cabecalho = etiqueta + h2
-        cards.append(f'<div style="{caixa(cor)}">{cabecalho}{texto}</div>')
-    if not cards:
-        cards.append(f'<div style="{caixa(CORES[0])}">{estilizar(corpo, CORES[1])}</div>')
-
-    data_ext = (f"{DIAS[AGORA.weekday()]}, {AGORA.day} de "
-                f"{MESES[AGORA.month - 1]} de {AGORA.year}")
-    bloco_fontes = (f'<div style="font-size:12px;color:#a78bfa;margin:0 0 22px 0;">'
-                    f"{estilizar(fontes, '#a78bfa')}</div>") if fontes else ""
-    credito = "<br>GIFs via GIPHY" if any(gifs[:N_GIFS]) else ""
-
-    return f"""<!DOCTYPE html><html><body style="margin:0;padding:0;background:#0b0620;">
-<div style="max-width:640px;margin:0 auto;padding:16px;font-family:Arial,Helvetica,sans-serif;
-font-size:15px;line-height:1.55;color:#f5f3ff;">
-<div style="{caixa(CORES[0])}text-align:center;">
-<div style="font-family:{MONO};font-size:12px;letter-spacing:3px;color:#fde047;font-weight:700;">1UP ● PLAYER 1 ● PRESS START</div>
-<h1 style="margin:10px 0 4px 0;font-family:{MONO};font-size:38px;line-height:1.05;letter-spacing:3px;color:#a3ff12;text-transform:uppercase;text-shadow:3px 3px 0 #ff2e93;">⚽ Bola do Dia</h1>
-<div style="font-family:{MONO};font-size:13px;letter-spacing:1px;color:#cbd5e1;text-transform:uppercase;">{data_ext}</div>
-{img(gifs[0], CORES[1], 300)}
-</div>
-{''.join(cards)}
-{bloco_fontes}
-<div style="text-align:center;font-family:{MONO};color:#a78bfa;font-size:12px;letter-spacing:1px;padding:4px 12px 20px 12px;">
-<div style="color:#fde047;font-weight:700;font-size:14px;margin:0 0 8px 0;">GAME OVER? NUNCA. TEM EDIÇÃO NOVA AMANHÃ ⚽</div>
-Gerado automaticamente por IA. Confira as fontes antes de bater o martelo no bar.{credito}
-</div>
-</div></body></html>"""
-
-
-def lista_destinatarios(bruto) -> list:
-    return [e.strip() for e in re.split(r"[;,\s]+", bruto or "") if e.strip()]
-
-
-def send_email(html_content: str):
-    destinatarios = lista_destinatarios(EMAIL_TO)
-    if not destinatarios:
-        raise ValueError("EMAIL_TO está vazio.")
-
-    print(f"Enviando e-mail para {len(destinatarios)} destinatário(s)...")
-    enviados, falhas = 0, []
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(EMAIL_USER, EMAIL_APP_PASSWORD)
-        for i, destino in enumerate(destinatarios, start=1):
-            msg = MIMEMultipart("alternative")
-            msg["Subject"] = f"⚽ Bola do Dia — {DATA}"
-            msg["From"] = EMAIL_USER
-            msg["To"] = destino
-            msg.attach(MIMEText(html_content, "html", "utf-8"))
-            try:
-                server.sendmail(EMAIL_USER, [destino], msg.as_string())
-                enviados += 1
-            except Exception as e:
-                falhas.append(i)
-                print(f"Falha ao enviar para o destinatário #{i}: {e}", file=sys.stderr)
-            time.sleep(1)
-
-    print(f"E-mails enviados: {enviados}/{len(destinatarios)}")
-    if enviados == 0:
-        raise RuntimeError("Nenhum e-mail foi enviado.")
-    if falhas:
-        print(f"Aviso: falharam os destinatários #{falhas}.", file=sys.stderr)
-
-
-if __name__ == "__main__":
-    faltando = [n for n in ("GEMINI_API_KEY", "EMAIL_USER", "EMAIL_APP_PASSWORD", "EMAIL_TO")
-                if not os.environ.get(n)]
-    if faltando:
-        print(f"Erro: variáveis ausentes: {', '.join(faltando)}", file=sys.stderr)
-        sys.exit(1)
-
-    print("Coletando feeds...")
-    noticias, memes = coletar()
-    print(f"Total: {len(noticias)} notícias, {len(memes)} posts de humor")
-
-    if len(noticias) < 5:
-        print("Aviso: poucas notícias nos feeds; a busca do Gemini vai compensar.", file=sys.stderr)
-
-    try:
-        conteudo, termos_gif = gerar_newsletter(noticias, memes)
-    except Exception as e:
-        print(f"Erro fatal: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    print(f"Termos de GIF: {termos_gif}")
-    gifs = buscar_gifs(termos_gif)
-    send_email(montar_email(conteudo, gifs))
+                    f'padding:3px 10px;margin:0 0
