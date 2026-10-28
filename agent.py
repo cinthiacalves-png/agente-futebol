@@ -244,23 +244,25 @@ def gerar_newsletter(noticias, memes):
     sem_busca = ("\n\nATENÇÃO: hoje a busca na web está indisponível. Use APENAS o material coletado acima.")
     
     for tentativa, (modelo, com_busca) in enumerate(plano, start=1):
-        for sub_tentativa in range(2):
-            try:
-                print(f"Gemini: tentativa {tentativa}.{sub_tentativa+1} ({modelo}, {'com' if com_busca else 'sem'} busca)...")
-                texto, resp = chamar_gemini(client, prompt if com_busca else prompt + sem_busca, com_busca, modelo)
-                texto, termos_gif = extrair_gifs(texto)
-                if "<h2" not in texto.lower():
-                    texto = md_para_html(texto)
-                validar(texto)
-                fontes = extrair_fontes(resp)
-                if fontes:
-                    lis = "".join(f'<li><a href="{u}">{htmllib.escape(t)}</a></li>' for t, u in fontes)
-                    texto += f'<h3 style="color:#777;">🔎 Fontes consultadas na busca</h3><ul>{lis}</ul>'
-                return texto, termos_gif
-            except Exception as e:
-                ultimo_erro = e
-                print(f"  falhou: {e}", file=sys.stderr)
-                time.sleep(25 * (sub_tentativa + 1))
+        try:
+            print(f"Gemini: tentativa {tentativa} ({modelo}, {'com' if com_busca else 'sem'} busca)...")
+            texto, resp = chamar_gemini(client, prompt if com_busca else prompt + sem_busca, com_busca, modelo)
+            texto, termos_gif = extrair_gifs(texto)
+            if "<h2" not in texto.lower():
+                texto = md_para_html(texto)
+            validar(texto)
+            fontes = extrair_fontes(resp)
+            if fontes:
+                lis = "".join(f'<li><a href="{u}">{htmllib.escape(t)}</a></li>' for t, u in fontes)
+                texto += f'<h3 style="color:#777;">🔎 Fontes consultadas na busca</h3><ul>{lis}</ul>'
+            return texto, termos_gif
+        except Exception as e:
+            ultimo_erro = e
+            print(f"  falhou: {e}", file=sys.stderr)
+            # Pausa de 50 segundos para limpar o rate limit da cota gratuita antes da próxima tentativa
+            if tentativa < len(plano):
+                print("Aguardando 50 segundos para resetar cota da API...")
+                time.sleep(50)
                 
     raise RuntimeError(f"Gemini não gerou conteúdo válido: {ultimo_erro}")
 
