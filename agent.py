@@ -51,7 +51,7 @@ FEEDS = [
 
 
 # ---------------------------------------------------------------------------
-# Coleta de feeds (RSS e Atom)
+# Coleta de feeds (RSS e Atom) com tratamento de falhas
 # ---------------------------------------------------------------------------
 def limpar(texto: str, limite: int = 220) -> str:
     texto = htmllib.unescape(texto or "")
@@ -76,11 +76,14 @@ def parse_data(texto):
 
 
 def ler_feed(nome: str, url: str, max_itens: int = 12):
-    r = requests.get(url, timeout=15, headers={"User-Agent": UA})
-    r.raise_for_status()
-    root = ET.fromstring(r.content)
-    itens = []
+    try:
+        r = requests.get(url, timeout=15, headers={"User-Agent": UA})
+        r.raise_for_status()
+        root = ET.fromstring(r.content)
+    except Exception:
+        return []
 
+    itens = []
     # RSS 2.0
     for it in root.findall(".//item"):
         itens.append({
@@ -111,7 +114,10 @@ def coletar():
     for nome, url, categoria in FEEDS:
         try:
             itens = ler_feed(nome, url)
-            print(f"[ok]   {nome}: {len(itens)} itens")
+            if itens:
+                print(f"[ok]   {nome}: {len(itens)} itens")
+            else:
+                print(f"[ignorado] {nome}: 0 itens recolhidos")
         except Exception as e:
             print(f"[erro] {nome}: {e}", file=sys.stderr)
             continue
@@ -235,7 +241,6 @@ def gerar_newsletter(noticias, memes):
     prompt = montar_prompt(noticias, memes)
     ultimo_erro = None
 
-    # Busca desligada por padrão, sem modelo reserva, mais tentativas com esperas maiores
     plano = [(MODEL, False), (MODEL, False), (MODEL, False), (MODEL, False)]
     
     for tentativa, (modelo, com_busca) in enumerate(plano, start=1):
@@ -251,8 +256,8 @@ def gerar_newsletter(noticias, memes):
             ultimo_erro = e
             print(f"  falhou: {e}", file=sys.stderr)
             if tentativa < len(plano):
-                espera = 45 * tentativa
-                print(f"Aguardando {espera} segundos para limpar o rate limit...")
+                espera = 20 * tentativa
+                print(f"Servidor instável. Aguardando {espera} segundos...")
                 time.sleep(espera)
                 
     raise RuntimeError(f"Gemini não gerou conteúdo válido: {ultimo_erro}")
