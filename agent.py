@@ -17,24 +17,22 @@ from google import genai
 from google.genai import types
 
 # ---------------------------------------------------------------------------
-# Configuração (mesmos secrets de antes)
+# Configuração
 # ---------------------------------------------------------------------------
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 EMAIL_USER = os.environ.get("EMAIL_USER")
 EMAIL_APP_PASSWORD = os.environ.get("EMAIL_APP_PASSWORD")
 EMAIL_TO = os.environ.get("EMAIL_TO")
-GIPHY_API_KEY = os.environ.get("GIPHY_API_KEY")  # opcional: sem ela, vai sem GIF
+GIPHY_API_KEY = os.environ.get("GIPHY_API_KEY")  # opcional
 
-# Mantive o modelo que você já usava; se der erro de "model not found",
-# troque aqui ou defina a variável MODEL no workflow.
 MODEL = os.environ.get("MODEL", "gemini-3.8-flash")
 
 AGORA = datetime.now(ZoneInfo("America/Sao_Paulo"))
 DATA = AGORA.strftime("%d/%m/%Y")
-JANELA = timedelta(hours=36)  # só notícias das últimas 36h
-UA = "Mozilla/5.0 (compatible; NewsletterFutebol/1.0)"
+JANELA = timedelta(hours=36)  # notícias das últimas 36h
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# (nome, url, categoria)  categoria: "noticias" ou "memes"
+# Todos os feeds originais mantidos!
 FEEDS = [
     ("Google Notícias · Futebol",
      "https://news.google.com/rss/search?q=futebol+when:1d&hl=pt-BR&gl=BR&ceid=BR:pt-419", "noticias"),
@@ -46,14 +44,13 @@ FEEDS = [
      "https://news.google.com/rss/search?q=Sele%C3%A7%C3%A3o+Brasileira+when:2d&hl=pt-BR&gl=BR&ceid=BR:pt-419", "noticias"),
     ("ESPN Soccer", "https://www.espn.com/espn/rss/soccer/news", "noticias"),
     ("ge", "https://ge.globo.com/rss/ge/futebol/", "noticias"),
-    # Reddit costuma bloquear IPs de datacenter; é "melhor esforço".
     ("Reddit r/futebol", "https://www.reddit.com/r/futebol/top/.rss?t=day", "memes"),
     ("Reddit r/soccercirclejerk", "https://www.reddit.com/r/soccercirclejerk/top/.rss?t=day", "memes"),
 ]
 
 
 # ---------------------------------------------------------------------------
-# Coleta de feeds (RSS e Atom)
+# Coleta de feeds (RSS e Atom) com espaçamento anti-bloqueio
 # ---------------------------------------------------------------------------
 def limpar(texto: str, limite: int = 220) -> str:
     texto = htmllib.unescape(texto or "")
@@ -116,7 +113,12 @@ def coletar():
             print(f"[ok]   {nome}: {len(itens)} itens")
         except Exception as e:
             print(f"[erro] {nome}: {e}", file=sys.stderr)
-            continue
+            # Continua o fluxo mesmo se um feed específico falhar temporariamente
+            itens = []
+        
+        # Pausa de 2 segundos entre cada feed para evitar rate limit (429) no Reddit/ESPN
+        time.sleep(2.0)
+        
         for i in itens:
             chave = re.sub(r"\W+", "", i["titulo"].lower())[:60]
             if chave in vistos:
@@ -132,7 +134,7 @@ def coletar():
 
 
 # ---------------------------------------------------------------------------
-# Geração com Gemini (+ busca do Google para completar estatísticas e memes)
+# Geração com Gemini
 # ---------------------------------------------------------------------------
 def montar_prompt(noticias, memes):
     bloco_noticias = "\n".join(noticias[:45]) or "(nenhum item coletado dos feeds)"
@@ -143,7 +145,7 @@ bem-humorado, em português do Brasil. Monte a edição de hoje de manhã.
 MATERIAL COLETADO DOS FEEDS (últimas ~36h):
 {bloco_noticias}
 
-POSTS DE HUMOR/MEMES COLETADOS (Reddit, podem estar vazios):
+POSTS DE HUMOR/MEMES COLETADOS:
 {bloco_memes}
 
 Você também tem busca na web: use-a para confirmar placares/fatos, achar estatísticas
@@ -158,18 +160,15 @@ ESTRUTURA OBRIGATÓRIA (HTML limpo, só o conteúdo do <body>, sem ```):
   sequências, recordes, desempenho). Diga de onde veio cada número. Não repita os mesmos
   fatos da seção de acontecimentos: traga números e ângulos diferentes.
 <h2>😂 Memes e resenha do dia</h2>
-  3 a 5 itens: descreva a piada/meme em 1-2 frases e cite onde bombou (perfil, comunidade).
-  Não incorpore imagens. Notícia comum NÃO é meme: só vale piada, zoeira ou post de humor.
-  Se não achar memes reais recentes, faça 2-3 comentários
-  engraçados seus sobre os fatos do dia e deixe claro que são comentários seus.
+  3 a 5 itens: descreva a piada/meme em 1-2 frases e cite onde bombou.
+  Se não achar memes reais recentes, faça 2-3 comentários engraçados seus sobre os fatos do dia.
 <h2>📅 Agenda de hoje</h2>
   Principais jogos do dia, horário de Brasília e onde passa (se confirmar).
 
 REGRAS: não invente placar, número, jogador ou link. Só use <a href> com links que aparecem
 no material coletado acima. Se não confirmar algo, deixe de fora. Nada de introdução ou
 despedida fora da estrutura.
-FORMATO: responda SOMENTE em HTML (<h2>, <ul><li>, <b>, <a href>). NÃO use Markdown
-(nada de **, #, * no início de linha ou [texto](url)).
+FORMATO: responda SOMENTE em HTML (<h2>, <ul><li>, <b>, <a href>). NÃO use Markdown.
 ÚLTIMAS 5 LINHAS da resposta, depois do HTML: uma busca de GIF por linha, com 2 a 4 palavras
 em inglês, exatamente nesta ordem:
 GIF1: clima geral do dia (topo da newsletter)
@@ -182,7 +181,6 @@ laughing crying / ready to play football."""
 
 
 def extrair_fontes(resp):
-    """Pega os links reais usados pela busca do Google (grounding)."""
     fontes = []
     try:
         meta = resp.candidates[0].grounding_metadata
@@ -205,7 +203,7 @@ def chamar_gemini(client, prompt, com_busca: bool, modelo: str):
         tools=[types.Tool(google_search=types.GoogleSearch())] if com_busca else None,
     )
     resp = client.models.generate_content(model=modelo, contents=prompt, config=config)
-    texto = (resp.text or "").strip()  # resp.text pode vir None (bloqueio/filtro)
+    texto = (resp.text or "").strip()
     texto = re.sub(r"^```(?:html)?\s*|\s*```$", "", texto).strip()
     return texto, resp
 
@@ -220,8 +218,6 @@ def validar(conteudo: str):
 
 
 def md_para_html(t: str) -> str:
-    """Rede de segurança: se o modelo devolver Markdown, converte para HTML."""
-
     def inline(s):
         s = htmllib.escape(s, quote=False)
         s = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", s)
@@ -246,7 +242,7 @@ def md_para_html(t: str) -> str:
         m_tit = re.match(r"^#{1,6}\s*(.*)", l)
         if m_tit:
             saida.append(f"<h2>{inline(m_tit.group(1))}</h2>")
-        elif re.match(r"^(\*\*)?[⚽📊😂📅]", l):  # título com emoji, sem '#'
+        elif re.match(r"^(\*\*)?[⚽📊😂📅]", l):
             saida.append(f"<h2>{inline(l)}</h2>")
         else:
             saida.append(f"<p>{inline(l)}</p>")
@@ -260,20 +256,16 @@ def gerar_newsletter(noticias, memes):
     prompt = montar_prompt(noticias, memes)
     ultimo_erro = None
 
-    fallback = os.environ.get("MODEL_FALLBACK", "gemini-2.5-flash")
-    sem_busca = ("\n\nATENÇÃO: hoje a busca na web está indisponível. Use APENAS o material "
-                 "coletado acima. Em 'Dados' e 'Memes', use só o que está no material; se não "
-                 "houver, faça comentários seus, deixando claro que são comentários seus.")
-    # 1ª com busca; se der 429/503, as demais vão sem busca (a busca tem cota própria)
-    # e a última tenta outro modelo.
-    plano = [(MODEL, True), (MODEL, False), (MODEL, False), (fallback, False)]
+    plano = [(MODEL, True), (MODEL, False), (MODEL, False)]
+    sem_busca = ("\n\nATENÇÃO: hoje a busca na web está indisponível. Use APENAS o material coletado acima.")
+    
     for tentativa, (modelo, com_busca) in enumerate(plano, start=1):
         try:
             print(f"Gemini: tentativa {tentativa} ({modelo}, {'com' if com_busca else 'sem'} busca)...")
             texto, resp = chamar_gemini(client, prompt if com_busca else prompt + sem_busca,
                                         com_busca, modelo)
             texto, termos_gif = extrair_gifs(texto)
-            if "<h2" not in texto.lower():  # modelo devolveu Markdown: converte
+            if "<h2" not in texto.lower():
                 texto = md_para_html(texto)
             validar(texto)
             fontes = extrair_fontes(resp)
@@ -285,16 +277,14 @@ def gerar_newsletter(noticias, memes):
             ultimo_erro = e
             print(f"  falhou: {e}", file=sys.stderr)
             if tentativa < len(plano):
-                time.sleep(30 * tentativa)
+                time.sleep(45)
     raise RuntimeError(f"Gemini não gerou conteúdo válido: {ultimo_erro}")
 
 
 # ---------------------------------------------------------------------------
-# GIFs do dia (Giphy): 1 no topo + 1 em cada seção
+# GIFs do dia (Giphy)
 # ---------------------------------------------------------------------------
 N_GIFS = 5
-# Termos de reserva por posição (topo, acontecimentos, dados, memes, agenda),
-# usados se o modelo não mandar o termo ou se a busca não achar nada.
 GIF_RESERVA = [
     "football celebration",
     "soccer goal",
@@ -305,7 +295,6 @@ GIF_RESERVA = [
 
 
 def extrair_gifs(texto: str):
-    """Tira do texto as linhas 'GIF1: termo' ... 'GIF5: termo' pedidas ao modelo."""
     termos = [None] * N_GIFS
     padrao = re.compile(r"^[ \t]*\**GIF[ \t]*([1-5])?[ \t]*:\**[ \t]*(.+?)[ \t]*$",
                         re.MULTILINE | re.IGNORECASE)
@@ -321,12 +310,11 @@ def extrair_gifs(texto: str):
 
 
 def buscar_gif(termo, usados: set):
-    """Busca no Giphy e devolve a URL de um GIF ainda não usado. Nunca levanta erro."""
-    if not termo:
+    if not termo or not GIPHY_API_KEY:
         return None
     try:
         r = requests.get(
-            "https://api.giphy.com/v1/gifs/search",
+            "[https://api.giphy.com/v1/gifs/search](https://api.giphy.com/v1/gifs/search)",
             timeout=15,
             params={"api_key": GIPHY_API_KEY, "q": termo, "limit": 15,
                     "rating": "pg", "lang": "en"},
@@ -347,7 +335,6 @@ def buscar_gif(termo, usados: set):
 
 
 def buscar_gifs(termos):
-    """Devolve N_GIFS URLs (None onde não deu para achar). Nunca derruba o envio."""
     if not GIPHY_API_KEY:
         print("GIPHY_API_KEY ausente: seguindo sem GIFs.")
         return [None] * N_GIFS
@@ -364,13 +351,13 @@ def buscar_gifs(termos):
 
 
 # ---------------------------------------------------------------------------
-# Visual do e-mail: estilo arcade anos 90, cores atuais (estilos inline p/ Gmail)
+# Visual do e-mail (Arcade Anos 90)
 # ---------------------------------------------------------------------------
 DIAS = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
         "sexta-feira", "sábado", "domingo"]
 MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho",
          "agosto", "setembro", "outubro", "novembro", "dezembro"]
-CORES = ["#a3ff12", "#22d3ee", "#ff2e93", "#fde047"]  # lima, ciano, rosa, amarelo
+CORES = ["#a3ff12", "#22d3ee", "#ff2e93", "#fde047"]
 ROTULOS = ["FASE 1", "FASE 2", "BÔNUS", "PRÓXIMA FASE"]
 MONO = "'Courier New',Courier,monospace"
 
@@ -389,7 +376,7 @@ def estilizar(html: str, cor_link: str = "#22d3ee") -> str:
 
 
 def montar_email(conteudo: str, gifs=None) -> str:
-    gifs = list(gifs or []) + [None] * N_GIFS  # posição 0 = topo; 1..4 = seções
+    gifs = list(gifs or []) + [None] * N_GIFS
     corpo, sep, fontes = conteudo.partition("<h3")
     fontes = ((sep + fontes) if sep else "").replace("color:#777;", "color:#a78bfa;")
     partes = re.split(r"(?i)(<h2[^>]*>.*?</h2>)", corpo, flags=re.DOTALL)
@@ -401,7 +388,7 @@ def montar_email(conteudo: str, gifs=None) -> str:
                 f'max-width:{largura}px;height:auto;margin:14px auto 6px auto;'
                 f'border:3px solid {cor};">')
 
-    def caixa(cor):  # moldura com "sombra dura" feita com bordas (funciona em qualquer cliente)
+    def caixa(cor):
         return (f"background:#160b3a;color:#f5f3ff;border:3px solid #f5f3ff;"
                 f"border-right:8px solid {cor};border-bottom:8px solid {cor};"
                 f"padding:18px 20px;margin:0 0 22px 0;")
@@ -419,7 +406,7 @@ def montar_email(conteudo: str, gifs=None) -> str:
                     f'padding:3px 10px;margin:0 0 8px 0;">{rotulo}</span>')
         h2 = (f'<h2 style="margin:0;font-family:{MONO};font-size:20px;line-height:1.3;'
               f'color:#ffffff;text-transform:uppercase;letter-spacing:1px;">{titulo}</h2>')
-        if gif:  # GIF pequeno à esquerda do título
+        if gif:
             cabecalho = (
                 '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
                 'border="0"><tr>'
@@ -431,7 +418,7 @@ def montar_email(conteudo: str, gifs=None) -> str:
         else:
             cabecalho = etiqueta + h2
         cards.append(f'<div style="{caixa(cor)}">{cabecalho}{texto}</div>')
-    if not cards:  # rede de segurança: sem <h2>, vira um cartão só
+    if not cards:
         cards.append(f'<div style="{caixa(CORES[0])}">{estilizar(corpo, CORES[1])}</div>')
 
     data_ext = (f"{DIAS[AGORA.weekday()]}, {AGORA.day} de "
@@ -458,17 +445,38 @@ Gerado automaticamente por IA. Confira as fontes antes de bater o martelo no bar
 </div></body></html>"""
 
 
+def lista_destinatarios(bruto) -> list:
+    return [e.strip() for e in re.split(r"[;,\s]+", bruto or "") if e.strip()]
+
+
 def send_email(html_content: str):
-    print("Enviando e-mail...")
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"⚽ Bola do Dia — {DATA}"
-    msg["From"] = EMAIL_USER
-    msg["To"] = EMAIL_TO
-    msg.attach(MIMEText(html_content, "html", "utf-8"))
+    destinatarios = lista_destinatarios(EMAIL_TO)
+    if not destinatarios:
+        raise ValueError("EMAIL_TO está vazio.")
+
+    print(f"Enviando e-mail para {len(destinatarios)} destinatário(s)...")
+    enviados, falhas = 0, []
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(EMAIL_USER, EMAIL_APP_PASSWORD)
-        server.sendmail(EMAIL_USER, EMAIL_TO, msg.as_string())
-    print("E-mail enviado com sucesso!")
+        for i, destino in enumerate(destinatarios, start=1):
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = f"⚽ Bola do Dia — {DATA}"
+            msg["From"] = EMAIL_USER
+            msg["To"] = destino
+            msg.attach(MIMEText(html_content, "html", "utf-8"))
+            try:
+                server.sendmail(EMAIL_USER, [destino], msg.as_string())
+                enviados += 1
+            except Exception as e:
+                falhas.append(i)
+                print(f"Falha ao enviar para o destinatário #{i}: {e}", file=sys.stderr)
+            time.sleep(1)
+
+    print(f"E-mails enviados: {enviados}/{len(destinatarios)}")
+    if enviados == 0:
+        raise RuntimeError("Nenhum e-mail foi enviado.")
+    if falhas:
+        print(f"Aviso: falharam os destinatários #{falhas}.", file=sys.stderr)
 
 
 if __name__ == "__main__":
@@ -489,7 +497,7 @@ if __name__ == "__main__":
         conteudo, termos_gif = gerar_newsletter(noticias, memes)
     except Exception as e:
         print(f"Erro fatal: {e}", file=sys.stderr)
-        sys.exit(1)  # workflow fica vermelho em vez de mandar e-mail vazio
+        sys.exit(1)
 
     print(f"Termos de GIF: {termos_gif}")
     gifs = buscar_gifs(termos_gif)
