@@ -31,6 +31,9 @@ MODEL = os.environ.get("MODEL", "gemini-3.8-flash")
 # Busca do Google no Gemini: desligada por padrão (a cota gratuita dela costuma estourar).
 # Para ligar, defina USE_SEARCH=1 no env do workflow.
 USE_SEARCH = os.environ.get("USE_SEARCH", "0") == "1"
+# Limite de tempo de cada chamada ao Gemini (em milissegundos). Sem isso, uma chamada
+# que trava pode deixar o workflow preso por horas.
+TIMEOUT_GEMINI_MS = 120_000
 
 AGORA = datetime.now(ZoneInfo("America/Sao_Paulo"))
 DATA = AGORA.strftime("%d/%m/%Y")
@@ -259,7 +262,14 @@ def md_para_html(t: str) -> str:
 
 
 def gerar_newsletter(noticias, memes):
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    try:
+        client = genai.Client(
+            api_key=GEMINI_API_KEY,
+            http_options=types.HttpOptions(timeout=TIMEOUT_GEMINI_MS),
+        )
+    except Exception as e:  # biblioteca antiga sem esse parâmetro: segue sem limite
+        print(f"Aviso: não foi possível definir timeout ({e}).", file=sys.stderr)
+        client = genai.Client(api_key=GEMINI_API_KEY)
     prompt = montar_prompt(noticias, memes)
     ultimo_erro = None
 
