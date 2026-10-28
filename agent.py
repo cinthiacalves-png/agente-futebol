@@ -17,35 +17,41 @@ from google import genai
 from google.genai import types
 
 # ---------------------------------------------------------------------------
-# Configuração
+# Configuração (mesmos secrets de antes)
 # ---------------------------------------------------------------------------
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 EMAIL_USER = os.environ.get("EMAIL_USER")
 EMAIL_APP_PASSWORD = os.environ.get("EMAIL_APP_PASSWORD")
 EMAIL_TO = os.environ.get("EMAIL_TO")
-GIPHY_API_KEY = os.environ.get("GIPHY_API_KEY")
+GIPHY_API_KEY = os.environ.get("GIPHY_API_KEY")  # opcional: sem ela, vai sem GIF
 
 MODEL = os.environ.get("MODEL", "gemini-3.8-flash")
 
 AGORA = datetime.now(ZoneInfo("America/Sao_Paulo"))
 DATA = AGORA.strftime("%d/%m/%Y")
-JANELA = timedelta(hours=36)
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+JANELA = timedelta(hours=36)  # só notícias das últimas 36h
+UA = "Mozilla/5.0 (compatible; NewsletterFutebol/1.0)"
 
+# (nome, url, categoria)  categoria: "noticias" ou "memes"
 FEEDS = [
-    ("Google Notícias · Futebol", "https://news.google.com/rss/search?q=futebol+when:1d&hl=pt-BR&gl=BR&ceid=BR:pt-419", "noticias"),
-    ("Google Notícias · Brasileirão", "https://news.google.com/rss/search?q=Brasileir%C3%A3o+OR+Libertadores+OR+Copa+do+Brasil+when:1d&hl=pt-BR&gl=BR&ceid=BR:pt-419", "noticias"),
-    ("Google Notícias · Europa", "https://news.google.com/rss/search?q=Champions+League+OR+Premier+League+OR+La+Liga+OR+Serie+A+when:1d&hl=pt-BR&gl=BR&ceid=BR:pt-419", "noticias"),
-    ("Google Notícias · Seleção", "https://news.google.com/rss/search?q=Sele%C3%A7%C3%A3o+Brasileira+when:2d&hl=pt-BR&gl=BR&ceid=BR:pt-419", "noticias"),
+    ("Google Notícias · Futebol",
+     "https://news.google.com/rss/search?q=futebol+when:1d&hl=pt-BR&gl=BR&ceid=BR:pt-419", "noticias"),
+    ("Google Notícias · Brasileirão",
+     "https://news.google.com/rss/search?q=Brasileir%C3%A3o+OR+Libertadores+OR+Copa+do+Brasil+when:1d&hl=pt-BR&gl=BR&ceid=BR:pt-419", "noticias"),
+    ("Google Notícias · Europa",
+     "https://news.google.com/rss/search?q=Champions+League+OR+Premier+League+OR+La+Liga+OR+Serie+A+when:1d&hl=pt-BR&gl=BR&ceid=BR:pt-419", "noticias"),
+    ("Google Notícias · Seleção",
+     "https://news.google.com/rss/search?q=Sele%C3%A7%C3%A3o+Brasileira+when:2d&hl=pt-BR&gl=BR&ceid=BR:pt-419", "noticias"),
     ("ESPN Soccer", "https://www.espn.com/espn/rss/soccer/news", "noticias"),
     ("ge", "https://ge.globo.com/rss/ge/futebol/", "noticias"),
+    # Reddit costuma bloquear IPs de datacenter; é "melhor esforço".
     ("Reddit r/futebol", "https://www.reddit.com/r/futebol/top/.rss?t=day", "memes"),
     ("Reddit r/soccercirclejerk", "https://www.reddit.com/r/soccercirclejerk/top/.rss?t=day", "memes"),
 ]
 
 
 # ---------------------------------------------------------------------------
-# Coleta de feeds com isolamento total de falhas
+# Coleta de feeds (RSS e Atom)
 # ---------------------------------------------------------------------------
 def limpar(texto: str, limite: int = 220) -> str:
     texto = htmllib.unescape(texto or "")
@@ -70,15 +76,12 @@ def parse_data(texto):
 
 
 def ler_feed(nome: str, url: str, max_itens: int = 12):
-    try:
-        r = requests.get(url, timeout=15, headers={"User-Agent": UA})
-        r.raise_for_status()
-        root = ET.fromstring(r.content)
-    except Exception as e:
-        print(f"[aviso] Feed '{nome}' indisponível neste ciclo: {e}", file=sys.stderr)
-        return []
-
+    r = requests.get(url, timeout=15, headers={"User-Agent": UA})
+    r.raise_for_status()
+    root = ET.fromstring(r.content)
     itens = []
+
+    # RSS 2.0
     for it in root.findall(".//item"):
         itens.append({
             "titulo": limpar(it.findtext("title"), 200),
@@ -87,6 +90,7 @@ def ler_feed(nome: str, url: str, max_itens: int = 12):
             "data": parse_data(it.findtext("pubDate")),
         })
 
+    # Atom
     ns = "{http://www.w3.org/2005/Atom}"
     for en in root.findall(f".//{ns}entry"):
         link_el = en.find(f"{ns}link")
@@ -105,14 +109,12 @@ def ler_feed(nome: str, url: str, max_itens: int = 12):
 def coletar():
     noticias, memes, vistos = [], [], set()
     for nome, url, categoria in FEEDS:
-        itens = ler_feed(nome, url)
-        if itens:
+        try:
+            itens = ler_feed(nome, url)
             print(f"[ok]   {nome}: {len(itens)} itens")
-        else:
-            print(f"[ignorado] {nome}: 0 itens recolhidos")
-
-        time.sleep(2.5)
-        
+        except Exception as e:
+            print(f"[erro] {nome}: {e}", file=sys.stderr)
+            continue
         for i in itens:
             chave = re.sub(r"\W+", "", i["titulo"].lower())[:60]
             if chave in vistos:
@@ -128,57 +130,50 @@ def coletar():
 
 
 # ---------------------------------------------------------------------------
-# Geração com Gemini
+# Geração com Gemini (Busca desligada por padrão, sem modelo reserva)
 # ---------------------------------------------------------------------------
 def montar_prompt(noticias, memes):
     bloco_noticias = "\n".join(noticias[:45]) or "(nenhum item coletado dos feeds)"
     bloco_memes = "\n".join(memes[:15]) or "(nenhum item coletado)"
-    return f"""Hoje é {DATA}. Você é o editor da newsletter diária "Bola do Dia": informado, bem-humorado, em português do Brasil. Monte a edição de hoje de manhã.
+    return f"""Hoje é {DATA}. Você é o editor da newsletter diária "Bola do Dia": informado,
+bem-humorado, em português do Brasil. Monte a edição de hoje de manhã.
 
 MATERIAL COLETADO DOS FEEDS (últimas ~36h):
 {bloco_noticias}
 
-POSTS DE HUMOR/MEMES COLETADOS:
+POSTS DE HUMOR/MEMES COLETADOS (Reddit, podem estar vazios):
 {bloco_memes}
-
-Você também tem busca na web: use-a para confirmar placares/fatos, achar estatísticas recentes e encontrar memes e zoeiras que viralizaram nas últimas 24-48h.
 
 ESTRUTURA OBRIGATÓRIA (HTML limpo, só o conteúdo do <body>, sem ```):
 <h2>⚽ Principais acontecimentos</h2>
-  5 a 8 itens: manchete em <b>negrito</b> + 1-2 frases. Priorize resultados de ontem e o que rola hoje.
+  5 a 8 itens: manchete em <b>negrito</b> + 1-2 frases. Priorize resultados de ontem e o que
+  rola hoje.
 <h2>📊 Dados pro papo de bar</h2>
-  3 a 5 estatísticas curiosas e VERIFICÁVEIS ligadas aos fatos recentes (artilharia, sequências, recordes, desempenho). Diga de onde veio cada número. Não repita os mesmos fatos da seção de acontecimentos: traga números e ângulos diferentes.
+  3 a 5 estatísticas curiosas e VERIFICÁVEIS ligadas aos fatos recentes (artilharia,
+  sequências, recordes, desempenho). Diga de onde veio cada número. Não repita os mesmos
+  fatos da seção de acontecimentos: traga números e ângulos diferentes.
 <h2>😂 Memes e resenha do dia</h2>
-  3 a 5 itens: descreva a piada/meme em 1-2 frases e cite onde bombou. Se não achar memes reais recentes, faça 2-3 comentários engraçados seus sobre os fatos do dia.
+  3 a 5 itens: descreva a piada/meme em 1-2 frases e cite onde bombou (perfil, comunidade).
+  Não incorpore imagens. Notícia comum NÃO é meme: só vale piada, zoeira ou post de humor.
+  Se não achar memes reais recentes, faça 2-3 comentários
+  engraçados seus sobre os fatos do dia e deixe claro que são comentários seus.
 <h2>📅 Agenda de hoje</h2>
   Principais jogos do dia, horário de Brasília e onde passa (se confirmar).
 
-REGRAS: não invente placar, número, jogador ou link. Só use <a href> com links que aparecem no material coletado acima. Se não confirmar algo, deixe de fora. Nada de introdução ou despedida fora da estrutura.
-FORMATO: responda SOMENTE em HTML (<h2>, <ul><li>, <b>, <a href>). NÃO use Markdown.
-ÚLTIMAS 5 LINHAS da resposta, depois do HTML: uma busca de GIF por linha, com 2 a 4 palavras em inglês, exatamente nesta ordem:
+REGRAS: não invente placar, número, jogador ou link. Só use <a href> com links que aparecem
+no material coletado acima. Se não confirmar algo, deixe de fora. Nada de introdução ou
+despedida fora da estrutura.
+FORMATO: responda SOMENTE em HTML (<h2>, <ul><li>, <b>, <a href>). NÃO use Markdown
+(nada de **, #, * no início de linha ou [texto](url)).
+ÚLTIMAS 5 LINHAS da resposta, depois do HTML: uma busca de GIF por linha, com 2 a 4 palavras
+em inglês, exatamente nesta ordem:
 GIF1: clima geral do dia (topo da newsletter)
 GIF2: clima da notícia principal da seção de acontecimentos
 GIF3: tema da seção de dados (números, análise)
 GIF4: clima da seção de memes (risada, zoeira)
 GIF5: clima da agenda (bola rolando, expectativa)
-Exemplos de termos: coach fired shock / last minute goal celebration / nerd calculating / laughing crying / ready to play football."""
-
-
-def extrair_fontes(resp):
-    fontes = []
-    try:
-        meta = resp.candidates[0].grounding_metadata
-        for ch in (meta.grounding_chunks or []):
-            if ch.web and ch.web.uri:
-                fontes.append((ch.web.title or ch.web.uri, ch.web.uri))
-    except Exception:
-        pass
-    vistos, unicas = set(), []
-    for t, u in fontes:
-        if u not in vistos:
-            vistos.add(u)
-            unicas.append((t, u))
-    return unicas[:8]
+Exemplos de termos: coach fired shock / last minute goal celebration / nerd calculating /
+laughing crying / ready to play football."""
 
 
 def chamar_gemini(client, prompt, com_busca: bool, modelo: str):
@@ -240,43 +235,46 @@ def gerar_newsletter(noticias, memes):
     prompt = montar_prompt(noticias, memes)
     ultimo_erro = None
 
-    plano = [(MODEL, True), (MODEL, False), (MODEL, False)]
-    sem_busca = ("\n\nATENÇÃO: hoje a busca na web está indisponível. Use APENAS o material coletado acima.")
+    # Busca desligada por padrão, sem modelo reserva, mais tentativas com esperas maiores
+    plano = [(MODEL, False), (MODEL, False), (MODEL, False), (MODEL, False)]
     
     for tentativa, (modelo, com_busca) in enumerate(plano, start=1):
         try:
-            print(f"Gemini: tentativa {tentativa} ({modelo}, {'com' if com_busca else 'sem'} busca)...")
-            texto, resp = chamar_gemini(client, prompt if com_busca else prompt + sem_busca, com_busca, modelo)
+            print(f"Gemini: tentativa {tentativa} ({modelo}, sem busca)...")
+            texto, resp = chamar_gemini(client, prompt, com_busca, modelo)
             texto, termos_gif = extrair_gifs(texto)
             if "<h2" not in texto.lower():
                 texto = md_para_html(texto)
             validar(texto)
-            fontes = extrair_fontes(resp)
-            if fontes:
-                lis = "".join(f'<li><a href="{u}">{htmllib.escape(t)}</a></li>' for t, u in fontes)
-                texto += f'<h3 style="color:#777;">🔎 Fontes consultadas na busca</h3><ul>{lis}</ul>'
             return texto, termos_gif
         except Exception as e:
             ultimo_erro = e
             print(f"  falhou: {e}", file=sys.stderr)
-            # Pausa de 50 segundos para limpar o rate limit da cota gratuita antes da próxima tentativa
             if tentativa < len(plano):
-                print("Aguardando 50 segundos para resetar cota da API...")
-                time.sleep(50)
+                espera = 45 * tentativa
+                print(f"Aguardando {espera} segundos para limpar o rate limit...")
+                time.sleep(espera)
                 
     raise RuntimeError(f"Gemini não gerou conteúdo válido: {ultimo_erro}")
 
 
 # ---------------------------------------------------------------------------
-# GIFs do dia (Giphy)
+# GIFs do dia (Giphy): 1 no topo + 1 em cada seção
 # ---------------------------------------------------------------------------
 N_GIFS = 5
-GIF_RESERVA = ["football celebration", "soccer goal", "nerd calculating", "laughing soccer fans", "ready to play football"]
+GIF_RESERVA = [
+    "football celebration",
+    "soccer goal",
+    "nerd calculating",
+    "laughing soccer fans",
+    "ready to play football",
+]
 
 
 def extrair_gifs(texto: str):
     termos = [None] * N_GIFS
-    padrao = re.compile(r"^[ \t]*\**GIF[ \t]*([1-5])?[ \t]*:\**[ \t]*(.+?)[ \t]*$", re.MULTILINE | re.IGNORECASE)
+    padrao = re.compile(r"^[ \t]*\**GIF[ \t]*([1-5])?[ \t]*:\**[ \t]*(.+?)[ \t]*$",
+                        re.MULTILINE | re.IGNORECASE)
 
     def coleta(m):
         pos = int(m.group(1)) - 1 if m.group(1) else 0
@@ -289,13 +287,14 @@ def extrair_gifs(texto: str):
 
 
 def buscar_gif(termo, usados: set):
-    if not termo or not GIPHY_API_KEY:
+    if not termo:
         return None
     try:
         r = requests.get(
             "[https://api.giphy.com/v1/gifs/search](https://api.giphy.com/v1/gifs/search)",
             timeout=15,
-            params={"api_key": GIPHY_API_KEY, "q": termo, "limit": 15, "rating": "pg", "lang": "en"},
+            params={"api_key": GIPHY_API_KEY, "q": termo, "limit": 15,
+                    "rating": "pg", "lang": "en"},
         )
         r.raise_for_status()
         dados = r.json().get("data", [])
@@ -329,19 +328,27 @@ def buscar_gifs(termos):
 
 
 # ---------------------------------------------------------------------------
-# Visual do e-mail (Arcade Anos 90)
+# Visual do e-mail: estilo arcade anos 90, cores atuais (estilos inline p/ Gmail)
 # ---------------------------------------------------------------------------
-DIAS = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
-MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"]
+DIAS = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
+        "sexta-feira", "sábado", "domingo"]
+MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho",
+         "agosto", "setembro", "outubro", "novembro", "dezembro"]
 CORES = ["#a3ff12", "#22d3ee", "#ff2e93", "#fde047"]
 ROTULOS = ["FASE 1", "FASE 2", "BÔNUS", "PRÓXIMA FASE"]
 MONO = "'Courier New',Courier,monospace"
 
 
 def estilizar(html: str, cor_link: str = "#22d3ee") -> str:
-    html = re.sub(r"<ul(?:\s[^>]*)?>", '<ul style="margin:12px 0 0 0;padding-left:22px;list-style-type:square;">', html)
+    html = re.sub(r"<ul(?:\s[^>]*)?>",
+                  '<ul style="margin:12px 0 0 0;padding-left:22px;list-style-type:square;">', html)
     html = re.sub(r"<li(?:\s[^>]*)?>", '<li style="margin:0 0 12px 0;">', html)
-    html = re.sub(r"<a\s+", f'<a style="color:{cor_link};font-weight:700;text-decoration:none;border-bottom:2px solid {cor_link};" ', html)
+    html = re.sub(
+        r"<a\s+",
+        f'<a style="color:{cor_link};font-weight:700;text-decoration:none;'
+        f'border-bottom:2px solid {cor_link};" ',
+        html,
+    )
     return html
 
 
@@ -354,10 +361,14 @@ def montar_email(conteudo: str, gifs=None) -> str:
     def img(url, cor, largura):
         if not url:
             return ""
-        return f'<img src="{url}" alt="GIF" style="display:block;width:100%;max-width:{largura}px;height:auto;margin:14px auto 6px auto;border:3px solid {cor};">'
+        return (f'<img src="{url}" alt="GIF" style="display:block;width:100%;'
+                f'max-width:{largura}px;height:auto;margin:14px auto 6px auto;'
+                f'border:3px solid {cor};">')
 
     def caixa(cor):
-        return f"background:#160b3a;color:#f5f3ff;border:3px solid #f5f3ff;border-right:8px solid {cor};border-bottom:8px solid {cor};padding:18px 20px;margin:0 0 22px 0;"
+        return (f"background:#160b3a;color:#f5f3ff;border:3px solid #f5f3ff;"
+                f"border-right:8px solid {cor};border-bottom:8px solid {cor};"
+                f"padding:18px 20px;margin:0 0 22px 0;")
 
     cards = []
     for i in range(1, len(partes) - 1, 2):
@@ -367,22 +378,35 @@ def montar_email(conteudo: str, gifs=None) -> str:
         cor = CORES[n % len(CORES)]
         rotulo = ROTULOS[n % len(ROTULOS)]
         gif = gifs[n + 1]
-        etiqueta = f'<span style="display:inline-block;background:{cor};color:#0b0620;font-family:{MONO};font-weight:700;font-size:12px;letter-spacing:2px;padding:3px 10px;margin:0 0 8px 0;">{rotulo}</span>'
-        h2 = f'<h2 style="margin:0;font-family:{MONO};font-size:20px;line-height:1.3;color:#ffffff;text-transform:uppercase;letter-spacing:1px;">{titulo}</h2>'
+        etiqueta = (f'<span style="display:inline-block;background:{cor};color:#0b0620;'
+                    f"font-family:{MONO};font-weight:700;font-size:12px;letter-spacing:2px;"
+                    f'padding:3px 10px;margin:0 0 8px 0;">{rotulo}</span>')
+        h2 = (f'<h2 style="margin:0;font-family:{MONO};font-size:20px;line-height:1.3;'
+              f'color:#ffffff;text-transform:uppercase;letter-spacing:1px;">{titulo}</h2>')
         if gif:
-            cabecalho = f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td width="110" valign="middle" style="padding:0 14px 0 0;"><img src="{gif}" alt="GIF" width="96" style="display:block;width:96px;height:auto;border:3px solid {cor};"></td><td valign="middle">{etiqueta}{h2}</td></tr></table>'
+            cabecalho = (
+                '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+                'border="0"><tr>'
+                '<td width="110" valign="middle" style="padding:0 14px 0 0;">'
+                f'<img src="{gif}" alt="GIF" width="96" style="display:block;width:96px;'
+                f'height:auto;border:3px solid {cor};"></td>'
+                f'<td valign="middle">{etiqueta}{h2}</td></tr></table>'
+            )
         else:
             cabecalho = etiqueta + h2
         cards.append(f'<div style="{caixa(cor)}">{cabecalho}{texto}</div>')
     if not cards:
         cards.append(f'<div style="{caixa(CORES[0])}">{estilizar(corpo, CORES[1])}</div>')
 
-    data_ext = f"{DIAS[AGORA.weekday()]}, {AGORA.day} de {MESES[AGORA.month - 1]} de {AGORA.year}"
-    bloco_fontes = f'<div style="font-size:12px;color:#a78bfa;margin:0 0 22px 0;">{estilizar(fontes, "#a78bfa")}</div>' if fontes else ""
+    data_ext = (f"{DIAS[AGORA.weekday()]}, {AGORA.day} de "
+                f"{MESES[AGORA.month - 1]} de {AGORA.year}")
+    bloco_fontes = (f'<div style="font-size:12px;color:#a78bfa;margin:0 0 22px 0;">'
+                    f"{estilizar(fontes, '#a78bfa')}</div>") if fontes else ""
     credito = "<br>GIFs via GIPHY" if any(gifs[:N_GIFS]) else ""
 
     return f"""<!DOCTYPE html><html><body style="margin:0;padding:0;background:#0b0620;">
-<div style="max-width:640px;margin:0 auto;padding:16px;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.55;color:#f5f3ff;">
+<div style="max-width:640px;margin:0 auto;padding:16px;font-family:Arial,Helvetica,sans-serif;
+font-size:15px;line-height:1.55;color:#f5f3ff;">
 <div style="{caixa(CORES[0])}text-align:center;">
 <div style="font-family:{MONO};font-size:12px;letter-spacing:3px;color:#fde047;font-weight:700;">1UP ● PLAYER 1 ● PRESS START</div>
 <h1 style="margin:10px 0 4px 0;font-family:{MONO};font-size:38px;line-height:1.05;letter-spacing:3px;color:#a3ff12;text-transform:uppercase;text-shadow:3px 3px 0 #ff2e93;">⚽ Bola do Dia</h1>
@@ -433,7 +457,8 @@ def send_email(html_content: str):
 
 
 if __name__ == "__main__":
-    faltando = [n for n in ("GEMINI_API_KEY", "EMAIL_USER", "EMAIL_APP_PASSWORD", "EMAIL_TO") if not os.environ.get(n)]
+    faltando = [n for n in ("GEMINI_API_KEY", "EMAIL_USER", "EMAIL_APP_PASSWORD", "EMAIL_TO")
+                if not os.environ.get(n)]
     if faltando:
         print(f"Erro: variáveis ausentes: {', '.join(faltando)}", file=sys.stderr)
         sys.exit(1)
