@@ -33,7 +33,7 @@ MODEL = os.environ.get("MODEL", "gemini-3.8-flash")
 USE_SEARCH = os.environ.get("USE_SEARCH", "0") == "1"
 # Limite de tempo de cada chamada ao Gemini (em milissegundos). Sem isso, uma chamada
 # que trava pode deixar o workflow preso por horas.
-TIMEOUT_GEMINI_MS = 120_000
+TIMEOUT_GEMINI_MS = 300_000  # 5 minutos
 
 AGORA = datetime.now(ZoneInfo("America/Sao_Paulo"))
 DATA = AGORA.strftime("%d/%m/%Y")
@@ -279,9 +279,12 @@ def gerar_newsletter(noticias, memes):
                  "houver, faça comentários seus, deixando claro que são comentários seus.")
     # Sem busca por padrão. Com USE_SEARCH=1, a 1ª tentativa usa busca e as demais não.
     # 5 tentativas com esperas crescentes (30s, 60s, 90s, 120s) para aguentar picos de 503.
-    plano = [(MODEL, USE_SEARCH)] + [(MODEL, False)] * 4
     if fallback and fallback != MODEL:
-        plano.append((fallback, False))
+        # Alterna com o modelo reserva para não ficar só insistindo no que está sobrecarregado.
+        plano = [(MODEL, USE_SEARCH), (MODEL, False), (fallback, False),
+                 (MODEL, False), (fallback, False)]
+    else:
+        plano = [(MODEL, USE_SEARCH)] + [(MODEL, False)] * 4
     for tentativa, (modelo, com_busca) in enumerate(plano, start=1):
         try:
             print(f"Gemini: tentativa {tentativa} ({modelo}, {'com' if com_busca else 'sem'} busca)...")
