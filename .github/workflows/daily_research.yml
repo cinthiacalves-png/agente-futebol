@@ -3,12 +3,12 @@ name: Daily Football Research Agent
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 8 * * *'
+    - cron: '0 5 * * *'
 
 jobs:
   run-agent:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -30,4 +30,5 @@ jobs:
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           GIPHY_API_KEY: ${{ secrets.GIPHY_API_KEY }}
+          MODEL_FALLBACK: gemini-3.5-flash-lite
         run: python agent.py
